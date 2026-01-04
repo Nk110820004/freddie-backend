@@ -1,0 +1,374 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+//
+// ========== ENUMS ==========
+//
+
+enum UserRole {
+  SUPER_ADMIN
+  ADMIN
+  USER
+}
+
+// <CHANGE> Added new enums for outlet status granularity
+enum OutletStatus {
+  ACTIVE
+  PAUSED
+  DISABLED
+}
+
+enum BusinessCategory {
+  HOTEL
+  RESTAURANT
+  GYM
+  CLINIC
+  OTHER
+}
+
+enum SubscriptionPlan {
+  MONTHLY
+  QUARTERLY
+  HALF_YEARLY
+  YEARLY
+  CUSTOM
+}
+
+enum SubscriptionStatus {
+  TRIAL
+  PAID
+  PARTIAL
+  UNPAID
+  EXPIRED
+}
+
+enum BillingStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+enum ApiStatus {
+  ENABLED
+  DISABLED
+}
+
+enum OnboardingStatus {
+  PENDING
+  COMPLETED
+}
+
+enum ReviewStatus {
+  PENDING
+  AUTO_REPLIED
+  MANUAL_PENDING
+  CLOSED
+}
+
+enum ManualQueueStatus {
+  PENDING
+  RESPONDED
+  ESCALATED
+}
+
+enum BillingPlan {
+  TRIAL
+  PAID
+  PARTIAL
+  PENDING
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+  CANCELLED
+}
+
+//
+// ========== MODELS ==========
+//
+
+model User {
+  id                String      @id @default(cuid())
+  name              String
+  email             String      @unique
+  passwordHash      String
+  role              UserRole    @default(USER)
+
+  twoFactorEnabled  Boolean     @default(false)
+  twoFactorSecret   String?
+  twoFactorVerified Boolean     @default(false)
+
+  lastLoginAt       DateTime?
+  lastLoginIp       String?
+
+  phoneNumber       String?     // WhatsApp phone
+  googleEmail       String?     // Gmail for OAuth
+  googleProfileId   String?     // Google account ID
+  googleRefreshToken String?    // Google refresh token for API access
+  gmbAccountId      String?     // Google Business Profile account ID
+  whatsappNumber    String?     // For receiving WhatsApp alerts
+
+  createdAt         DateTime    @default(now())
+  updatedAt         DateTime    @updatedAt
+  deletedAt         DateTime?
+
+  // relations
+  outlets           Outlet[]
+  auditLogs         AuditLog[]
+  apiKeys           ApiKey[]
+  refreshTokens     RefreshToken[]
+  payments          Payment[]
+  subscriptionAudits SubscriptionAuditLog[]
+  assignedManualReviews ManualReviewQueue[]
+
+  @@index([email])
+  @@index([role])
+  @@index([deletedAt])
+}
+
+// <CHANGE> Enhanced Outlet model with required business fields
+model Outlet {
+  id                    String              @id @default(cuid())
+  name                  String
+  groupName             String?             // outlet group name
+  primaryContactName    String              // required for onboarding
+  contactEmail          String              @unique // required, unique
+  contactPhone          String              @unique // required, unique
+  
+  category              BusinessCategory    @default(OTHER)
+  subscriptionPlan      SubscriptionPlan    @default(MONTHLY)
+  
+  // Status fields with granular control
+  subscriptionStatus    SubscriptionStatus  @default(TRIAL)
+  billingStatus         BillingStatus       @default(ACTIVE)
+  apiStatus             ApiStatus           @default(DISABLED)
+  onboardingStatus      OnboardingStatus    @default(PENDING)
+  status                OutletStatus        @default(ACTIVE) // legacy field
+
+  googlePlaceId         String?
+  googleLocationName    String?
+
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  // owner
+  userId                String
+  user                  User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // relations
+  reviews               Review[]
+  billing               Billing?
+  apiKeys               ApiKey[]
+  auditLogs             AuditLog[]
+  payments              Payment[]
+  subscriptionAudits    SubscriptionAuditLog[]
+  manualReviewQueue     ManualReviewQueue[]
+
+  @@index([userId])
+  @@index([status])
+  @@index([subscriptionStatus])
+  @@index([billingStatus])
+  @@index([apiStatus])
+  @@index([onboardingStatus])
+}
+
+// <CHANGE> Updated Review model with new statuses
+model Review {
+  id                String              @id @default(cuid())
+  googleReviewId    String?             // GMB review ID
+  rating            Int
+  customerName      String
+  reviewText        String
+  aiReplyText       String?             // renamed for clarity
+  manualReplyText   String?             // renamed for clarity
+  status            ReviewStatus        @default(PENDING)
+  platform          String              @default("GMB") // always GMB
+
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  outletId          String
+  outlet            Outlet              @relation(fields: [outletId], references: [id], onDelete: Cascade)
+
+  auditLogs         AuditLog[]
+  manualQueue       ManualReviewQueue?
+
+  @@index([outletId])
+  @@index([status])
+  @@index([rating])
+  @@index([createdAt])
+  @@index([googleReviewId])
+}
+
+// <CHANGE> New table for manual review queue (ratings 1-3)
+model ManualReviewQueue {
+  id                String              @id @default(cuid())
+  
+  reviewId          String              @unique
+  review            Review              @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  
+  outletId          String
+  outlet            Outlet              @relation(fields: [outletId], references: [id], onDelete: Cascade)
+  
+  assignedAdminId   String?
+  assignedAdmin     User?               @relation(fields: [assignedAdminId], references: [id], onDelete: SetNull)
+  
+  reminderCount     Int                 @default(0)
+  nextReminderAt    DateTime?
+  status            ManualQueueStatus   @default(PENDING)
+  
+  createdAt         DateTime            @default(now())
+  updatedAt         DateTime            @updatedAt
+
+  @@index([reviewId])
+  @@index([outletId])
+  @@index([assignedAdminId])
+  @@index([status])
+  @@index([nextReminderAt])
+}
+
+model Billing {
+  id            String       @id @default(cuid())
+  plan          BillingPlan  @default(TRIAL)
+  trialEndsAt   DateTime?
+  paidUntil     DateTime?
+  isActive      Boolean      @default(true)
+
+  createdAt     DateTime     @default(now())
+  updatedAt     DateTime     @updatedAt
+
+  outletId      String       @unique
+  outlet        Outlet       @relation(fields: [outletId], references: [id], onDelete: Cascade)
+
+  payments      Payment[]
+
+  @@index([plan])
+  @@index([isActive])
+}
+
+model ApiKey {
+  id            String     @id @default(cuid())
+  keyHash       String     @unique
+  expiresAt     DateTime
+  isActive      Boolean    @default(true)
+  lastUsedAt    DateTime?
+  createdAt     DateTime   @default(now())
+
+  userId        String
+  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  outletId      String
+  outlet        Outlet     @relation(fields: [outletId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([outletId])
+  @@index([expiresAt])
+}
+
+model AuditLog {
+  id          String    @id @default(cuid())
+  action      String
+  entity      String
+  entityId    String
+  details     String?
+  ip          String?
+  userAgent   String?
+  createdAt   DateTime  @default(now())
+
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  outletId    String?
+  outlet      Outlet?   @relation(fields: [outletId], references: [id], onDelete: SetNull)
+
+  reviewId    String?
+  review      Review?   @relation(fields: [reviewId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([action])
+  @@index([entity])
+  @@index([createdAt])
+}
+
+// <CHANGE> New table for subscription audit trail
+model SubscriptionAuditLog {
+  id          String    @id @default(cuid())
+  
+  outletId    String
+  outlet      Outlet    @relation(fields: [outletId], references: [id], onDelete: Cascade)
+  
+  adminId     String
+  admin       User      @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  
+  action      String    // MANUAL_PAYMENT_UPDATE, SUBSCRIPTION_STATUS_CHANGE, etc
+  oldValue    String?
+  newValue    String?
+  remarks     String?
+  
+  createdAt   DateTime  @default(now())
+
+  @@index([outletId])
+  @@index([adminId])
+  @@index([action])
+  @@index([createdAt])
+}
+
+model IpAllowlist {
+  id          String    @id @default(cuid())
+  ip          String    @unique
+  description String?
+  isActive    Boolean   @default(true)
+
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([ip])
+  @@index([isActive])
+}
+
+model Payment {
+  id                String         @id @default(cuid())
+  razorpayOrderId   String         @unique
+  razorpayPaymentId String?        @unique
+  amount            Int            // in paise
+  currency          String         @default("INR")
+  status            PaymentStatus  @default(PENDING)
+  
+  planType          BillingPlan
+  
+  createdAt         DateTime       @default(now())
+  updatedAt         DateTime       @updatedAt
+  
+  userId            String
+  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  
+  outletId          String
+  outlet            Outlet         @relation(fields: [outletId], references: [id], onDelete: Cascade)
+  
+  billingId         String?
+  billing           Billing?       @relation(fields: [billingId], references: [id], onDelete: SetNull)
+
+  @@index([userId])
+  @@index([outletId])
+  @@index([status])
+  @@index([razorpayOrderId])
+}
+
+model RefreshToken {
+  id         String   @id @default(cuid())
+  tokenHash  String   @unique
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt  DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}

@@ -1,0 +1,497 @@
+import type { Response } from "express"
+import { userRepository } from "../repository/user.repo"
+import { logger } from "../utils/logger"
+import bcryptjs from "bcryptjs"
+import type { AuthRequest } from "../middleware/auth.middleware"
+import crypto from "crypto"
+import { OutletRepository } from "../repository/outlet.repo"
+import { ManualReviewQueueRepository } from "../repository/manual-review-queue.repo"
+import { prisma } from "../lib/prisma" // assuming prisma client is here
+
+const outletRepo = new OutletRepository(prisma)
+const manualQueueRepo = new ManualReviewQueueRepository(prisma)
+
+export class AdminController {
+  async createUser(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { name, email, role, phoneNumber, googleEmail, outletIds } = req.body
+
+      // Validate input
+      if (!name || !email || !role) {
+        res.status(400).json({ error: "Name, email, and role are required" })
+        return
+      }
+
+      // Check if user exists
+      const existing = await userRepository.findByEmail(email)
+      if (existing) {
+        res.status(409).json({ error: "User already exists" })
+        return
+      }
+
+      // Generate random password (user will reset on first login)
+      const tempPassword = Math.random().toString(36).slice(-12)
+      const passwordHash = await bcryptjs.hash(tempPassword, 10)
+
+      const user = await userRepository.create({
+        name,
+        email,
+        passwordHash,
+        role,
+        phoneNumber,
+        googleEmail,
+      })
+
+      // Assign outlets if provided
+      if (outletIds && outletIds.length > 0) {
+        await userRepository.assignOutlets(user.id, outletIds)
+      }
+
+      logger.info(`User created: ${user.id}`, { email, role })
+
+      res.status(201).json({
+        message: "User created successfully",
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        },
+      })
+    } catch (error) {
+      logger.error("Failed to create user", error)
+      res.status(500).json({ error: "Failed to create user" })
+    }
+  }
+
+  async getUsers(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { limit = "50", offset = "0" } = req.query
+
+      const users = await userRepository.getAll(Number.parseInt(limit as string), Number.parseInt(offset as string))
+      const total = await userRepository.count()
+
+      res.status(200).json({
+        users,
+        total,
+        limit: Number.parseInt(limit as string),
+        offset: Number.parseInt(offset as string),
+      })
+    } catch (error) {
+      logger.error("Failed to fetch users", error)
+      res.status(500).json({ error: "Failed to fetch users" })
+    }
+  }
+
+  async updateUserRole(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { userId } = req.params
+      const { role } = req.body
+
+      if (!role) {
+        res.status(400).json({ error: "Role is required" })
+        return
+      }
+
+      const user = await userRepository.updateRole(userId, role)
+
+      logger.info(`User role updated: ${userId}`, { role })
+
+      res.status(200).json({
+        message: "User role updated",
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+        },
+      })
+    } catch (error) {
+      logger.error("Failed to update user role", error)
+      res.status(500).json({ error: "Failed to update user role" })
+    }
+  }
+
+  async deleteUser(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { userId } = req.params
+
+      const user = await userRepository.softDelete(userId)
+
+      logger.info(`User deleted: ${userId}`)
+
+      res.status(200).json({ message: "User deleted successfully" })
+    } catch (error) {
+      logger.error("Failed to delete user", error)
+      res.status(500).json({ error: "Failed to delete user" })
+    }
+  }
+
+  async assignOutlets(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { userId } = req.params
+      const { outletIds } = req.body
+
+      if (!outletIds || !Array.isArray(outletIds)) {
+        res.status(400).json({ error: "outletIds array is required" })
+        return
+      }
+
+      await userRepository.assignOutlets(userId, outletIds)
+
+      logger.info(`Outlets assigned to user: ${userId}`, { outletIds })
+
+      res.status(200).json({ message: "Outlets assigned successfully" })
+    } catch (error) {
+      logger.error("Failed to assign outlets", error)
+      res.status(500).json({ error: "Failed to assign outlets" })
+    }
+  }
+
+  async onboardUser(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const {
+        name,
+        email,
+        whatsappNumber,
+        gmbOutletId,
+        outletName,
+        subscriptionPlan = "MONTHLY",
+        subscriptionStatus = "TRIAL",
+        category = "OTHER",
+      } = req.body
+
+      // Validate required fields per prompt
+      if (!name || !email || !whatsappNumber || !outletName) {
+        res.status(400).json({ error: "Name, email, WhatsApp, and outlet name are required" })
+        return
+      }
+
+      // Check if user exists
+      const existing = await userRepository.findByEmail(email.toLowerCase())
+      if (existing) {
+        res.status(409).json({ error: "User already exists" })
+        return
+      }
+
+      // Generate credentials
+      const tempPassword = crypto.randomBytes(8).toString("hex")
+      const passwordHash = await bcryptjs.hash(tempPassword, 12)
+
+      // 1. Create User
+      const user = await userRepository.create({
+        name,
+        email: email.toLowerCase(),
+        passwordHash,
+        role: "USER",
+        phoneNumber: whatsappNumber,
+        whatsappNumber, // specifically for alerts
+      })
+
+      // 2. Create Outlet via new repository with rules
+      const outlet = await outletRepo.createOutlet({
+        name: outletName,
+        userId: user.id,
+        primaryContactName: name,
+        contactEmail: email.toLowerCase(),
+        contactPhone: whatsappNumber,
+        category: category as any,
+        subscriptionPlan: subscriptionPlan as any,
+        subscriptionStatus: subscriptionStatus as any,
+        googlePlaceId: gmbOutletId,
+      })
+
+      // 3. Log onboarding
+      logger.info(`User onboarded: ${user.id} with outlet ${outlet.id}`)
+
+      res.status(201).json({
+        message: "User onboarded successfully",
+        credentials: {
+          email: user.email,
+          password: tempPassword,
+          loginUrl: "/user/login",
+        },
+        user,
+        outlet,
+      })
+    } catch (error) {
+      logger.error("Failed to onboard user", error)
+      res.status(500).json({ error: "Failed to onboard user" })
+    }
+  }
+
+  async onboardOutlet(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const {
+        name,
+        email,
+        whatsappNumber,
+        gmbOutletId,
+        outletName,
+        groupName,
+        subscriptionPlan = "MONTHLY",
+        subscriptionStatus = "TRIAL",
+        category = "OTHER",
+      } = req.body
+
+      // Validate required fields per requirements
+      if (!name || !email || !whatsappNumber || !outletName) {
+        res.status(400).json({
+          error: "Incomplete onboarding data",
+          message: "Name, email, WhatsApp number, and outlet name are required",
+        })
+        return
+      }
+
+      // Check if user exists
+      const existing = await userRepository.findByEmail(email.toLowerCase())
+      if (existing) {
+        res.status(409).json({ error: "User with this email already exists" })
+        return
+      }
+
+      // Generate secure temporary credentials
+      const tempPassword = crypto.randomBytes(12).toString("hex")
+      const passwordHash = await bcryptjs.hash(tempPassword, 12)
+
+      // Create user
+      const user = await userRepository.create({
+        name,
+        email: email.toLowerCase(),
+        passwordHash,
+        role: "USER",
+        phoneNumber: whatsappNumber,
+        whatsappNumber,
+      })
+
+      // Create outlet with business rule enforcement
+      const outlet = await outletRepo.createOutlet({
+        name: outletName,
+        groupName,
+        userId: user.id,
+        primaryContactName: name,
+        contactEmail: email.toLowerCase(),
+        contactPhone: whatsappNumber,
+        category: category as any,
+        subscriptionPlan: subscriptionPlan as any,
+        subscriptionStatus: subscriptionStatus as any,
+        googlePlaceId: gmbOutletId,
+        googleLocationName: gmbOutletId,
+      })
+
+      // Complete onboarding if all fields are present
+      if (subscriptionStatus !== "UNPAID") {
+        await outletRepo.completeOnboarding(outlet.id)
+      }
+
+      logger.info(`Outlet onboarded: ${outlet.id} for user ${user.id}`)
+
+      res.status(201).json({
+        message: "Outlet onboarded successfully",
+        credentials: {
+          email: user.email,
+          password: tempPassword,
+          loginUrl: "/user/login",
+        },
+        user: {
+          id: user.id,
+          name: user.name,
+          email: user.email,
+        },
+        outlet: {
+          id: outlet.id,
+          name: outlet.name,
+          subscriptionStatus: outlet.subscriptionStatus,
+          apiStatus: outlet.apiStatus,
+          onboardingStatus: outlet.onboardingStatus,
+        },
+      })
+    } catch (error) {
+      logger.error("Failed to onboard outlet", error)
+      res.status(500).json({ error: "Failed to onboard outlet" })
+    }
+  }
+
+  async updateSubscription(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { outletId } = req.params
+      const { subscriptionStatus, billingStatus, apiStatus, remarks } = req.body
+
+      if (!req.user?.id) {
+        res.status(401).json({ error: "Unauthorized" })
+        return
+      }
+
+      if (!remarks) {
+        res.status(400).json({
+          error: "Remarks are required",
+          message: "Admin remarks must be provided for subscription updates",
+        })
+        return
+      }
+
+      // Validate outlet exists
+      const outlet = await outletRepo.getOutletById(outletId)
+      if (!outlet) {
+        res.status(404).json({ error: "Outlet not found" })
+        return
+      }
+
+      // Update with business rule enforcement and audit trail
+      const updated = await outletRepo.updateOutletSubscription(outletId, req.user.id, {
+        subscriptionStatus,
+        billingStatus,
+        apiStatus,
+        remarks,
+      })
+
+      logger.info(`Subscription updated for outlet ${outletId} by admin ${req.user.id}`)
+
+      res.status(200).json({
+        message: "Subscription updated successfully",
+        outlet: {
+          id: updated.id,
+          name: updated.name,
+          subscriptionStatus: updated.subscriptionStatus,
+          billingStatus: updated.billingStatus,
+          apiStatus: updated.apiStatus,
+        },
+      })
+    } catch (error) {
+      logger.error("Failed to update subscription", error)
+      res.status(400).json({
+        error: error instanceof Error ? error.message : "Subscription update failed",
+      })
+    }
+  }
+
+  async getAllOutlets(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const outlets = await outletRepo.getAllOutlets()
+
+      res.status(200).json({
+        outlets,
+        total: outlets.length,
+      })
+    } catch (error) {
+      logger.error("Failed to fetch outlets", error)
+      res.status(500).json({ error: "Failed to fetch outlets" })
+    }
+  }
+
+  async getManualReviewQueue(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { status } = req.query
+
+      const whereClause: any = {}
+
+      if (status) {
+        whereClause.status = status
+      }
+
+      const queue = await prisma.manualReviewQueue.findMany({
+        where: whereClause,
+        include: {
+          review: {
+            include: {
+              outlet: {
+                select: {
+                  id: true,
+                  name: true,
+                },
+              },
+            },
+          },
+          assignedAdmin: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: "asc",
+        },
+      })
+
+      res.status(200).json({
+        queue,
+        total: queue.length,
+      })
+    } catch (error) {
+      logger.error("Failed to fetch manual review queue", error)
+      res.status(500).json({ error: "Failed to fetch manual review queue" })
+    }
+  }
+
+  async submitManualReply(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { reviewId } = req.params
+      const { replyText } = req.body
+
+      if (!replyText || typeof replyText !== "string" || replyText.trim().length === 0) {
+        res.status(400).json({ error: "Reply text is required" })
+        return
+      }
+
+      // Get review and queue item
+      const review = await prisma.review.findUnique({
+        where: { id: reviewId },
+        include: {
+          outlet: {
+            include: {
+              user: true,
+            },
+          },
+          manualQueue: true,
+        },
+      })
+
+      if (!review) {
+        res.status(404).json({ error: "Review not found" })
+        return
+      }
+
+      // Update review with manual reply
+      await prisma.review.update({
+        where: { id: reviewId },
+        data: {
+          manualReplyText: replyText,
+          status: "CLOSED",
+        },
+      })
+
+      // Mark queue item as responded
+      if (review.manualQueue) {
+        await manualQueueRepo.markAsResponded(review.manualQueue.id)
+      }
+
+      // Post to GMB if credentials available
+      if (review.outlet.user.googleRefreshToken && review.outlet.googleLocationName && review.googleReviewId) {
+        const { gmbService } = await import("../integrations/gmb")
+        await gmbService.postReply(
+          review.outlet.googleLocationName,
+          review.googleReviewId,
+          replyText,
+          review.outlet.user.googleRefreshToken,
+        )
+      }
+
+      logger.info(`Manual reply submitted for review ${reviewId} by admin ${req.user?.id}`)
+
+      res.status(200).json({
+        message: "Manual reply submitted successfully",
+        review: {
+          id: review.id,
+          status: "CLOSED",
+        },
+      })
+    } catch (error) {
+      logger.error("Failed to submit manual reply", error)
+      res.status(500).json({ error: "Failed to submit manual reply" })
+    }
+  }
+}
+
+export const adminController = new AdminController()
