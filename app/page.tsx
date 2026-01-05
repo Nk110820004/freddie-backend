@@ -1,7 +1,7 @@
-"use client"
-
-import  from "../server"
-
-export default function SyntheticV0PageForDeployment() {
-  return < />
+export default function Home() {
+  return (
+    <main>
+      <h1>API Server Running</h1>
+    </main>
+  );
 }
