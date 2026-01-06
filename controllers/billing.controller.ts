@@ -2,6 +2,7 @@ import { Request, Response } from "express";
 import { billingRepository } from "../repository/billing.repo";
 import { logger } from "../utils/logger";
 import { auditRepository } from "../repository/audit.repo";
+import { SubscriptionStatus } from "@prisma/client";
 
 export class BillingController {
   async getByOutlet(req: Request, res: Response): Promise<void> {
@@ -24,13 +25,13 @@ export class BillingController {
 
   async create(req: Request, res: Response): Promise<void> {
     try {
-      const { outletId, plan, trialEndsAt } = req.body;
+      const { outletId, status, trialEndsAt } = req.body;
 
       const actorId = (req as any).userId || null
 
       const billing = await billingRepository.createBilling({
         outletId,
-        plan,
+        status,
         trialEndsAt,
       });
 
@@ -53,86 +54,32 @@ export class BillingController {
     }
   }
 
-  async updatePlan(req: Request, res: Response): Promise<void> {
+  async updateStatus(req: Request, res: Response): Promise<void> {
     try {
       const { outletId } = req.params;
-      const { plan } = req.body;
+      const { status } = req.body as { status: SubscriptionStatus };
 
       const actorId = (req as any).userId || null
 
-      const billing = await billingRepository.updateBillingPlan(outletId, plan);
+      const billing = await billingRepository.updateSubscriptionStatus(outletId, status);
 
       res.status(200).json({
-        message: "Plan updated",
+        message: "Billing status updated",
         billing,
       });
 
       if (billing) {
         await auditRepository.createAuditLog({
-          action: 'BILLING_PLAN_UPDATED',
+          action: 'BILLING_STATUS_UPDATED',
           entity: 'Billing',
           entityId: billing.id,
           userId: actorId,
-          details: { plan }
+          details: { status }
         })
       }
     } catch (error) {
-      logger.error("Failed to update plan", error);
-      res.status(500).json({ error: "Failed to update plan" });
-    }
-  }
-
-  async deactivate(req: Request, res: Response): Promise<void> {
-    try {
-      const { outletId } = req.params;
-
-      const actorId = (req as any).userId || null
-
-      const billing = await billingRepository.deactivateBilling(outletId);
-
-      res.status(200).json({
-        message: "Billing deactivated",
-        billing,
-      });
-
-      if (billing) {
-        await auditRepository.createAuditLog({
-          action: 'BILLING_DEACTIVATED',
-          entity: 'Billing',
-          entityId: billing.id,
-          userId: actorId,
-        })
-      }
-    } catch (error) {
-      logger.error("Failed to deactivate billing", error);
-      res.status(500).json({ error: "Failed to deactivate billing" });
-    }
-  }
-
-  async activate(req: Request, res: Response): Promise<void> {
-    try {
-      const { outletId } = req.params;
-
-      const actorId = (req as any).userId || null
-
-      const billing = await billingRepository.activateBilling(outletId);
-
-      res.status(200).json({
-        message: "Billing activated",
-        billing,
-      });
-
-      if (billing) {
-        await auditRepository.createAuditLog({
-          action: 'BILLING_ACTIVATED',
-          entity: 'Billing',
-          entityId: billing.id,
-          userId: actorId,
-        })
-      }
-    } catch (error) {
-      logger.error("Failed to activate billing", error);
-      res.status(500).json({ error: "Failed to activate billing" });
+      logger.error("Failed to update billing status", error);
+      res.status(500).json({ error: "Failed to update billing status" });
     }
   }
 
@@ -150,7 +97,8 @@ export class BillingController {
     try {
       const trials = await billingRepository.getExpiringTrials();
       res.status(200).json(trials);
-    } catch (error) {
+    }
+    catch (error) {
       logger.error("Failed to fetch expiring trials", error);
       res.status(500).json({ error: "Failed to fetch expiring trials" });
     }

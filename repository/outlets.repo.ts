@@ -1,151 +1,191 @@
 import { prisma } from './base.repo';
-import { Outlet, OutletStatus } from '@prisma/client';
+import {
+  Outlet,
+  OutletStatus,
+  SubscriptionStatus,
+  ApiStatus,
+  OnboardingStatus
+} from '@prisma/client';
 
-/**
- * Get all outlets
- */
-export async function getAllOutlets(): Promise<Outlet[]> {
-  return prisma.outlet.findMany({
-    orderBy: { createdAt: 'desc' },
-  });
+export class OutletRepository {
+  //
+  // ----------- READ -----------
+  //
+
+  async getAll(): Promise<Outlet[]> {
+    return prisma.outlet.findMany({
+      orderBy: { createdAt: 'desc' }
+    });
+  }
+
+  async getByUserId(userId: string): Promise<Outlet[]> {
+    return prisma.outlet.findMany({
+      where: { userId },
+      orderBy: { createdAt: 'desc' }
+    });
+  }
+
+  async getById(id: string): Promise<Outlet | null> {
+    return prisma.outlet.findUnique({
+      where: { id }
+    });
+  }
+
+  //
+  // ----------- CREATE -----------
+  //
+  async createStrict(data: {
+    name: string;
+    userId: string;
+    primaryContactName: string;
+    contactEmail: string;
+    contactPhone: string;
+    subscriptionPlan: string;
+  }): Promise<Outlet> {
+    // Backend business rule enforcement
+    if (!data.primaryContactName || !data.contactEmail || !data.contactPhone) {
+      throw new Error('Missing required onboarding fields');
+    }
+
+    return prisma.outlet.create({
+      data: {
+        name: data.name,
+        userId: data.userId,
+        primaryContactName: data.primaryContactName,
+        contactEmail: data.contactEmail,
+        contactPhone: data.contactPhone,
+        subscriptionPlan: data.subscriptionPlan as any,
+        subscriptionStatus: SubscriptionStatus.TRIAL,
+        apiStatus: ApiStatus.DISABLED,
+        onboardingStatus: OnboardingStatus.PENDING
+      }
+    });
+  }
+
+  //
+  // ----------- UPDATE -----------
+  //
+  async update(id: string, data: Partial<Outlet>): Promise<Outlet> {
+    return prisma.outlet.update({
+      where: { id },
+      data: {
+        ...data,
+        updatedAt: new Date()
+      }
+    });
+  }
+
+  //
+  // ----------- STATUS UPDATE ENFORCING RULES -----------
+  //
+
+  async updateStatus(id: string, status: OutletStatus): Promise<Outlet> {
+    return prisma.outlet.update({
+      where: { id },
+      data: { status, updatedAt: new Date() }
+    });
+  }
+
+  /**
+   * Enforce:
+   * - API ENABLED only if:
+   *   subscriptionStatus = ACTIVE
+   */
+  async setApiStatus(id: string, apiStatus: ApiStatus): Promise<Outlet> {
+    const outlet = await this.getById(id);
+    if (!outlet) throw new Error('Outlet not found');
+
+    if (
+      apiStatus === ApiStatus.ENABLED &&
+      outlet.subscriptionStatus !== SubscriptionStatus.ACTIVE
+    ) {
+      throw new Error('API cannot be enabled on inactive subscription');
+    }
+
+    return prisma.outlet.update({
+      where: { id },
+      data: {
+        apiStatus,
+        updatedAt: new Date()
+      }
+    });
+  }
+
+  /**
+   * Enforce onboarding completion conditions
+   */
+  async markOnboardingCompleted(id: string) {
+    const outlet = await this.getById(id);
+    if (!outlet) throw new Error('Outlet not found');
+
+    if (!outlet.contactEmail || !outlet.contactPhone || !outlet.primaryContactName) {
+      throw new Error('Cannot complete onboarding without required contact fields');
+    }
+
+    return prisma.outlet.update({
+      where: { id },
+      data: {
+        onboardingStatus: OnboardingStatus.COMPLETED
+      }
+    });
+  }
+
+  //
+  // ----------- METRICS FIXED -----------
+  //
+  async getHealthMetrics(id: string) {
+    const outlet = await prisma.outlet.findUnique({
+      where: { id },
+      include: {
+        reviews: true,
+        billing: true,
+        manualReviewQueue: true
+      }
+    });
+
+    if (!outlet) return null;
+
+    const totalReviews = outlet.reviews.length;
+
+    const closedReviews = outlet.reviews.filter(
+      r => r.status === 'CLOSED'
+    ).length;
+
+    const manualPending = outlet.reviews.filter(
+      r => r.status === 'MANUAL_PENDING'
+    ).length;
+
+    const autoReplied = outlet.reviews.filter(
+      r => r.status === 'AUTO_REPLIED'
+    ).length;
+
+    const avgRating =
+      totalReviews === 0
+        ? 0
+        : outlet.reviews.reduce((sum, r) => sum + r.rating, 0) / totalReviews;
+
+    return {
+      id: outlet.id,
+      name: outlet.name,
+      status: outlet.status,
+      subscriptionStatus: outlet.subscriptionStatus,
+      billingStatus: outlet.billing?.status ?? null,
+      totalReviews,
+      closedReviews,
+      manualPending,
+      autoReplied,
+      avgRating: Number(avgRating.toFixed(2))
+    };
+  }
+
+  //
+  // ----------- DELETE -----------
+  //
+  async delete(id: string): Promise<Outlet> {
+    return prisma.outlet.delete({
+      where: { id }
+    });
+  }
 }
 
-/**
- * Get outlets owned by a specific user
- */
-export async function getOutletsByUserId(userId: string): Promise<Outlet[]> {
-  return prisma.outlet.findMany({
-    where: { userId },
-    orderBy: { createdAt: 'desc' },
-  });
-}
-
-/**
- * Get outlet by ID
- */
-export async function getOutletById(id: string): Promise<Outlet | null> {
-  return prisma.outlet.findUnique({
-    where: { id },
-  });
-}
-
-/**
- * Create new outlet
- */
-export async function createOutlet(data: {
-  name: string;
-  userId: string;
-}): Promise<Outlet> {
-  return prisma.outlet.create({
-    data: {
-      name: data.name,
-      userId: data.userId,
-    },
-  });
-}
-
-/**
- * Update outlet details
- */
-export async function updateOutlet(
-  id: string,
-  data: Partial<Outlet>
-): Promise<Outlet> {
-  return prisma.outlet.update({
-    where: { id },
-    data: {
-      ...data,
-      updatedAt: new Date(),
-    },
-  });
-}
-
-/**
- * Update outlet status (ACTIVE | PAUSED | DISABLED)
- */
-export async function updateOutletStatus(
-  id: string,
-  status: OutletStatus
-): Promise<Outlet> {
-  return prisma.outlet.update({
-    where: { id },
-    data: {
-      status,
-      updatedAt: new Date(),
-    },
-  });
-}
-
-/**
- * Get only ACTIVE outlets
- */
-export async function getActiveOutlets(): Promise<Outlet[]> {
-  return prisma.outlet.findMany({
-    where: { status: 'ACTIVE' },
-    orderBy: { createdAt: 'desc' },
-  });
-}
-
-/**
- * Compute outlet health metrics for dashboard
- */
-export async function getOutletHealthMetrics(id: string) {
-  const outlet = await prisma.outlet.findUnique({
-    where: { id },
-    include: {
-      reviews: true,
-      billing: true,
-    },
-  });
-
-  if (!outlet) return null;
-
-  const totalReviews = outlet.reviews.length;
-
-  const closedReviews = outlet.reviews.filter(
-    r => r.status === 'CLOSED'
-  ).length;
-
-  const escalatedReviews = outlet.reviews.filter(
-    r => r.status === 'ESCALATED'
-  ).length;
-
-  const avgRating =
-    totalReviews > 0
-      ? outlet.reviews.reduce((sum, r) => sum + r.rating, 0) / totalReviews
-      : 0;
-
-  return {
-    id: outlet.id,
-    name: outlet.name,
-    status: outlet.status,
-    billingPlan: outlet.billing?.plan ?? null,
-    totalReviews,
-    closedReviews,
-    escalatedReviews,
-    pendingReviews: totalReviews - closedReviews - escalatedReviews,
-    avgRating: Number(avgRating.toFixed(2)),
-  };
-}
-
-/**
- * Hard delete outlet (cascades reviews/billing via Prisma relations)
- */
-export async function deleteOutlet(id: string): Promise<Outlet> {
-  return prisma.outlet.delete({
-    where: { id },
-  });
-}
-
-// Export repository object with all methods
-export const outletsRepository = {
-  getAllOutlets,
-  getOutletsByUserId,
-  getOutletById,
-  createOutlet,
-  updateOutlet,
-  updateOutletStatus,
-  getActiveOutlets,
-  getOutletHealthMetrics,
-  deleteOutlet,
-};
+export const outletsRepository = new OutletRepository();

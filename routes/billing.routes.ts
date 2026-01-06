@@ -44,19 +44,9 @@ router.get('/overdue', requireAdmin, (req, res) =>
 
 // -------- SUPER ADMIN ONLY --------
 
-// update billing plan
-router.patch('/outlet/:outletId/plan', requireSuperAdmin, (req, res) =>
-  billingController.updatePlan(req, res)
-);
-
-// activate billing
-router.post('/outlet/:outletId/activate', requireSuperAdmin, (req, res) =>
-  billingController.activate(req, res)
-);
-
-// deactivate billing
-router.post('/outlet/:outletId/deactivate', requireSuperAdmin, (req, res) =>
-  billingController.deactivate(req, res)
+// update billing status
+router.patch('/outlet/:outletId/status', requireSuperAdmin, (req, res) =>
+  billingController.updateStatus(req, res)
 );
 
 export default router;

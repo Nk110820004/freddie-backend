@@ -1,123 +1,83 @@
-import type { Request, Response } from "express"
-import { db } from "../database"
-import { logger } from "../utils/logger"
-import bcryptjs from "bcryptjs"
-import { emailService } from "../services/email.service"
+import type { Request, Response } from "express";
+import { z } from "zod";
+import bcryptjs from "bcryptjs";
+import crypto from "crypto";
 
-// CREATE USER
-export const createUser = async (req: Request, res: Response) => {
-  try {
-    const { name, email, phoneNumber, role, googleEmail } = req.body
+import { usersRepository } from "../repository/users.repo";
+import { auditRepository } from "../repository/audit.repo";
+import { emailService } from "../services/email.service";
+import { logger } from "../utils/logger";
 
-    if (!email || !name || !role) {
-      return res.status(400).json({ message: "Email, name, and role are required" })
-    }
+import { UserRole } from "@prisma/client";
 
-    if (!["ADMIN", "SUPER_ADMIN"].includes(role)) {
-      return res.status(400).json({ message: "Invalid role" })
-    }
+const AdminCreateSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  role: z.enum(["ADMIN", "SUPER_ADMIN"]),
+  phoneNumber: z.string().optional(),
+  googleEmail: z.string().email().optional()
+});
 
-    const existing = await db.user.findUnique({
-      where: { email },
-    })
+function requireSuperAdmin(req: Request) {
+  const actor = (req as any).user;
+  if (!actor || actor.role !== "SUPER_ADMIN") {
+    const err: any = new Error("SUPER_ADMIN role required");
+    err.status = 403;
+    throw err;
+  }
+  return actor;
+}
 
-    if (existing) return res.status(409).json({ message: "User already exists" })
+export class AdminUserController {
+  async create(req: Request, res: Response) {
+    try {
+      const actor = requireSuperAdmin(req);
+      const input = AdminCreateSchema.parse(req.body);
 
-    const tempPassword = Math.random().toString(36).slice(-8)
-    const passwordHash = await bcryptjs.hash(tempPassword, 10)
+      // Only super admin can create super admin
+      if (input.role === "SUPER_ADMIN" && actor.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Only SUPER_ADMIN may create SUPER_ADMIN" });
+      }
 
-    const user = await db.user.create({
-      data: {
-        name,
-        email,
-        googleEmail,
-        phoneNumber,
+      const existing = await usersRepository.getUserByEmail(input.email.toLowerCase());
+      if (existing) return res.status(409).json({ error: "User already exists" });
+
+      // cryptographically strong temporary password
+      const tempPassword = crypto.randomBytes(12).toString("base64url");
+      const passwordHash = await bcryptjs.hash(tempPassword, 12);
+
+      const user = await usersRepository.createUser({
+        name: input.name,
+        email: input.email.toLowerCase(),
+        role: input.role as UserRole,
         passwordHash,
-        role,
-      },
-    })
+        whatsappNumber: input.phoneNumber,
+        googleEmail: input.googleEmail
+      });
 
-    await emailService.sendOnboardingEmail(email, name, tempPassword)
-    logger.info(`New admin user created and notified: ${email} with role ${role}`)
+      await auditRepository.createAuditLog({
+        action: "ADMIN_USER_CREATED",
+        entity: "User",
+        entityId: user.id,
+        userId: actor.id,
+        details: { role: input.role }
+      });
 
-    return res.status(201).json({
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-      },
-      tempPassword,
-      message: "User created successfully. Password sent via email.",
-    })
-  } catch (err) {
-    logger.error("Failed to create user", err)
-    res.status(500).json({ message: "Failed to create user" })
-  }
-}
+      await emailService.sendOnboardingEmail(
+        input.email,
+        input.name,
+        tempPassword
+      ).catch(() => logger.warn("Failed to send onboarding email"));
 
-// GET ALL USERS
-export const getUsers = async (req: Request, res: Response) => {
-  try {
-    const users = await db.user.findMany({
-      where: { deletedAt: null },
-      include: { outlets: true },
-    })
-
-    res.json(users)
-  } catch (err) {
-    logger.error("Error fetching users", err)
-    res.status(500).json({ message: "Failed to fetch users" })
-  }
-}
-
-// UPDATE USER
-export const updateUser = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params
-    const { name, phoneNumber, googleEmail, role } = req.body
-
-    if (!id) {
-      return res.status(400).json({ message: "User ID is required" })
+      res.status(201).json({
+        message: "Admin user created",
+        user: { id: user.id, name: user.name, email: user.email, role: user.role }
+      });
+    } catch (err: any) {
+      logger.error("Admin user create failed", err);
+      res.status(err.status || 500).json({ error: err.message || "Failed" });
     }
-
-    const user = await db.user.update({
-      where: { id },
-      data: {
-        ...(name && { name }),
-        ...(phoneNumber && { phoneNumber }),
-        ...(googleEmail && { googleEmail }),
-        ...(role && { role }),
-      },
-    })
-
-    res.json({
-      message: "User updated successfully",
-      user,
-    })
-  } catch (err) {
-    logger.error("Failed to update user", err)
-    res.status(500).json({ message: "Failed to update user" })
   }
 }
 
-// DELETE USER (SOFT DELETE)
-export const deleteUser = async (req: Request, res: Response) => {
-  try {
-    const { id } = req.params
-
-    if (!id) {
-      return res.status(400).json({ message: "User ID is required" })
-    }
-
-    await db.user.update({
-      where: { id },
-      data: { deletedAt: new Date() },
-    })
-
-    res.json({ message: "User deleted successfully" })
-  } catch (err) {
-    logger.error("Delete user failed", err)
-    res.status(500).json({ message: "Failed to delete user" })
-  }
-}
+export const adminUserController = new AdminUserController();

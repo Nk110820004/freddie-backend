@@ -1,4 +1,5 @@
 import type { Request, Response } from "express"
+import { z } from "zod"
 import { usersRepository } from "../repository/users.repo"
 import { reviewsRepository } from "../repository/reviews.repo"
 import { outletsRepository } from "../repository/outlets.repo"
@@ -6,6 +7,15 @@ import { logger } from "../utils/logger"
 import { whatsappService } from "../integrations/whatsapp"
 import { google } from "googleapis"
 import env from "../config/env"
+
+const UserProfileSchema = z.object({
+  whatsappNumber: z.string().optional(),
+  gmbAccountId: z.string().optional(),
+})
+
+const WhatsAppConnectSchema = z.object({
+  phoneNumber: z.string().min(1, { message: "phoneNumber is required" }),
+})
 
 export class UserController {
   /**
@@ -47,7 +57,14 @@ export class UserController {
   async updateProfile(req: Request, res: Response): Promise<void> {
     try {
       const userId = (req as any).userId
-      const { whatsappNumber, gmbAccountId } = req.body
+      const validation = UserProfileSchema.safeParse(req.body)
+      if (!validation.success) {
+        return res.status(400).json({
+          message: "Invalid input",
+          errors: validation.error.formErrors.fieldErrors,
+        })
+      }
+      const { whatsappNumber, gmbAccountId } = validation.data
 
       const user = await usersRepository.updateUser(userId, {
         whatsappNumber: whatsappNumber || undefined,
@@ -247,12 +264,14 @@ export class UserController {
   async connectWhatsApp(req: Request, res: Response): Promise<void> {
     try {
       const userId = (req as any).userId
-      const { phoneNumber } = req.body
-
-      if (!phoneNumber || typeof phoneNumber !== "string") {
-        res.status(400).json({ error: "phoneNumber is required" })
-        return
+      const validation = WhatsAppConnectSchema.safeParse(req.body)
+      if (!validation.success) {
+        return res.status(400).json({
+          message: "Invalid input",
+          errors: validation.error.formErrors.fieldErrors,
+        })
       }
+      const { phoneNumber } = validation.data
 
       const updated = await usersRepository.updateUser(userId, {
         whatsappNumber: phoneNumber,

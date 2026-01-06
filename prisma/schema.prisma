@@ -42,15 +42,10 @@ enum SubscriptionPlan {
 
 enum SubscriptionStatus {
   TRIAL
-  PAID
-  PARTIAL
-  UNPAID
-  EXPIRED
-}
-
-enum BillingStatus {
   ACTIVE
-  SUSPENDED
+  PAST_DUE
+  CANCELED
+  INACTIVE
 }
 
 enum ApiStatus {
@@ -74,13 +69,6 @@ enum ManualQueueStatus {
   PENDING
   RESPONDED
   ESCALATED
-}
-
-enum BillingPlan {
-  TRIAL
-  PAID
-  PARTIAL
-  PENDING
 }
 
 enum PaymentStatus {
@@ -147,7 +135,6 @@ model Outlet {
   
   // Status fields with granular control
   subscriptionStatus    SubscriptionStatus  @default(TRIAL)
-  billingStatus         BillingStatus       @default(ACTIVE)
   apiStatus             ApiStatus           @default(DISABLED)
   onboardingStatus      OnboardingStatus    @default(PENDING)
   status                OutletStatus        @default(ACTIVE) // legacy field
@@ -174,7 +161,6 @@ model Outlet {
   @@index([userId])
   @@index([status])
   @@index([subscriptionStatus])
-  @@index([billingStatus])
   @@index([apiStatus])
   @@index([onboardingStatus])
 }
@@ -236,10 +222,9 @@ model ManualReviewQueue {
 
 model Billing {
   id            String       @id @default(cuid())
-  plan          BillingPlan  @default(TRIAL)
+  status        SubscriptionStatus @default(TRIAL)
   trialEndsAt   DateTime?
   paidUntil     DateTime?
-  isActive      Boolean      @default(true)
 
   createdAt     DateTime     @default(now())
   updatedAt     DateTime     @updatedAt
@@ -249,8 +234,7 @@ model Billing {
 
   payments      Payment[]
 
-  @@index([plan])
-  @@index([isActive])
+  @@index([status])
 }
 
 model ApiKey {
@@ -341,7 +325,7 @@ model Payment {
   currency          String         @default("INR")
   status            PaymentStatus  @default(PENDING)
   
-  planType          BillingPlan
+  planType          SubscriptionPlan
   
   createdAt         DateTime       @default(now())
   updatedAt         DateTime       @updatedAt
@@ -371,4 +355,21 @@ model RefreshToken {
 
   @@index([userId])
   @@index([expiresAt])
+}
+model ReviewWorkflow {
+  reviewId        String      @id
+  review          Review      @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  currentState    String
+  reminderCount   Int         @default(0)
+
+  lastActionAt    DateTime    @default(now())
+  lastReminderAt  DateTime?
+  nextReminderAt  DateTime?
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+
+  @@index([currentState])
+  @@index([nextReminderAt])
 }

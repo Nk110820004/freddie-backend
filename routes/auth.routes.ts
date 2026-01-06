@@ -91,28 +91,7 @@ router.post("/user/login", async (req: Request, res: Response) => {
    */
   router.post("/register", async (req: Request, res: Response) => {
     try {
-      const { name, email, password } = req.body as any
-
-      if (!name || !email || !password) {
-        res.status(400).json({ error: "name, email and password are required" })
-        return
-      }
-
-      const { usersRepository } = await import("../repository/users.repo")
-
-      const existing = await usersRepository.getUserByEmail(email.toLowerCase())
-      if (existing) {
-        res.status(409).json({ error: "User already exists" })
-        return
-      }
-
-      const bcryptjs = (await import("bcryptjs")).default
-      const passwordHash = await bcryptjs.hash(password, 12)
-
-      await usersRepository.createUser({ name, email: email.toLowerCase(), passwordHash, role: "USER" })
-
-      // delegate to login to issue tokens/cookies
-      await authController.loginUser(req, res)
+      await authController.register(req, res)
     } catch (err) {
       res.status(500).json({ error: "Internal server error" })
     }

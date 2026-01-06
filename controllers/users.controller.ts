@@ -1,399 +1,200 @@
-import type { Request, Response } from "express"
-import bcryptjs from "bcryptjs"
+import type { Request, Response } from "express";
+import bcryptjs from "bcryptjs";
+import { z } from "zod";
 
-import { usersRepository } from "../repository/users.repo"
-import { auditRepository } from "../repository/audit.repo"
+import { usersRepository } from "../repository/users.repo";
+import { auditRepository } from "../repository/audit.repo";
+import { twoFAService, type TwoFASecret } from "../services/twofa.service";
+import { encryptionService } from "../services/encryption.service";
+import { logger } from "../utils/logger";
+import { UserRole } from "@prisma/client";
 
-import { twoFAService, type TwoFASecret } from "../services/twofa.service"
-import { encryptionService } from "../services/encryption.service"
-import { authController, AuthController } from "./auth.controller"
-import { logger } from "../utils/logger"
+//
+// ---------- PASSWORD POLICY UTILITY (no controller cross-dependency)
+//
+function validatePasswordStrength(password: string) {
+  const errors: string[] = [];
 
-export interface CreateUserRequest {
-  name: string
-  email: string
-  password: string
-  role: "SUPER_ADMIN" | "ADMIN"
+  if (password.length < 8) errors.push("Minimum 8 characters");
+  if (!/[A-Z]/.test(password)) errors.push("Must include uppercase letter");
+  if (!/[a-z]/.test(password)) errors.push("Must include lowercase letter");
+  if (!/[0-9]/.test(password)) errors.push("Must include number");
+  if (!/[!@#$%^&*(),.?\":{}|<>]/.test(password))
+    errors.push("Must include special symbol");
+
+  return { valid: errors.length === 0, errors };
 }
 
-export interface UpdateUserRequest {
-  name?: string
-  role?: "SUPER_ADMIN" | "ADMIN"
-}
+//
+// ----------------- VALIDATION SCHEMAS -----------------
+//
 
-export interface ChangePasswordRequest {
-  currentPassword: string
-  newPassword: string
-}
+const CreateUserSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  password: z.string().min(8),
+  role: z.nativeEnum(UserRole)
+});
 
-export interface UpdateProfileRequest {
-  phone?: string
-  googleEmail?: string
-  gmbAccountId?: string
-}
+const UpdateProfileSchema = z.object({
+  phone: z.string().optional(),
+  googleEmail: z.string().email().optional(),
+  gmbAccountId: z.string().optional()
+});
 
 export class UsersController {
-  /**
-   * GET ALL USERS
-   */
-  async getAll(req: Request, res: Response): Promise<void> {
+  //
+  // -------- GET ALL USERS ----------
+  //
+  async getAll(req: Request, res: Response) {
     try {
-      const users = await usersRepository.getAllUsers()
-      res.status(200).json(users)
-    } catch (error) {
-      logger.error("Failed to get users", error)
-      res.status(500).json({ error: "Failed to retrieve users" })
+      const users = await usersRepository.getAllUsers();
+      res.json(users);
+    } catch (err) {
+      logger.error("getAll failed", err);
+      res.status(500).json({ error: "Failed to fetch users" });
     }
   }
 
-  /**
-   * GET USER BY ID
-   */
-  async getById(req: Request, res: Response): Promise<void> {
+  //
+  // -------- CREATE USER ----------
+  //
+  async create(req: Request, res: Response) {
     try {
-      const { id } = req.params
+      const actorId = (req as any).userId;
+      const actor = await usersRepository.getUserById(actorId);
 
-      const user = await usersRepository.getUserById(id)
-
-      if (!user) {
-        res.status(404).json({ error: "User not found" })
-        return
+      const parsed = CreateUserSchema.safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json(parsed.error.flatten());
       }
 
-      res.status(200).json(user)
-    } catch (error) {
-      logger.error("Failed to get user", error)
-      res.status(500).json({ error: "Failed to retrieve user" })
-    }
-  }
+      const { name, email, password, role } = parsed.data;
 
-  /**
-   * CREATE ADMIN USER
-   */
-  async create(req: Request, res: Response): Promise<void> {
-    try {
-      const { name, email, password, role } = req.body as CreateUserRequest
-      const actorId = (req as any).userId
-
-      if (!name || !email || !password || !role) {
-        res.status(400).json({ error: "Name, email, password, and role are required" })
-        return
+      // RBAC: only super admin can create super admin
+      if (role === "SUPER_ADMIN" && actor?.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Insufficient permissions" });
       }
 
-      if (!["SUPER_ADMIN", "ADMIN"].includes(role)) {
-        res.status(400).json({ error: "Invalid role" })
-        return
-      }
-
-      const strength = AuthController.validatePasswordStrength(password)
+      const strength = validatePasswordStrength(password);
       if (!strength.valid) {
-        res.status(400).json({
-          error: "Password does not meet requirements",
-          details: strength.errors,
-        })
-        return
+        return res
+          .status(400)
+          .json({ error: "Weak password", details: strength.errors });
       }
 
-      const existing = await usersRepository.getUserByEmail(email.toLowerCase())
-      if (existing && !existing.deletedAt) {
-        res.status(409).json({ error: "User already exists" })
-        return
+      const exists = await usersRepository.getUserByEmail(email);
+      if (exists && !exists.deletedAt) {
+        return res.status(409).json({ error: "User already exists" });
       }
 
-      const passwordHash = await bcryptjs.hash(password, 12)
+      const passwordHash = await bcryptjs.hash(password, 12);
 
       const user = await usersRepository.createUser({
         name,
         email: email.toLowerCase(),
         passwordHash,
-        role,
-      })
+        role
+      });
 
       await auditRepository.createAuditLog({
         action: "USER_CREATED",
         entity: "User",
         entityId: user.id,
         userId: actorId,
-        details: { name, email, role },
-      })
+        details: { name, email, role }
+      });
 
       res.status(201).json({
-        message: "User created successfully",
-        user,
-        nextStep: "User must enroll 2FA",
-      })
-    } catch (error) {
-      logger.error("Failed to create user", error)
-      res.status(500).json({ error: "Failed to create user" })
+        message: "User created",
+        user
+      });
+    } catch (err) {
+      logger.error("create user failed", err);
+      res.status(500).json({ error: "Failed to create user" });
     }
   }
 
-  /**
-   * UPDATE USER
-   */
-  async update(req: Request, res: Response): Promise<void> {
+  //
+  // -------- CHANGE PASSWORD ----------
+  //
+  async changePassword(req: Request, res: Response) {
     try {
-      const { id } = req.params
-      const { name, role } = req.body as UpdateUserRequest
-      const actorId = (req as any).userId
+      const userId = (req as any).userId;
+      const { currentPassword, newPassword } = req.body;
 
-      const current = await usersRepository.getUserById(id)
-
-      if (!current) {
-        res.status(404).json({ error: "User not found" })
-        return
-      }
-
-      if (role && !["SUPER_ADMIN", "ADMIN"].includes(role)) {
-        res.status(400).json({ error: "Invalid role" })
-        return
-      }
-
-      const updated = await usersRepository.updateUser(id, {
-        ...(name && { name }),
-        ...(role && { role }),
-      })
-
-      await auditRepository.createAuditLog({
-        action: "USER_UPDATED",
-        entity: "User",
-        entityId: id,
-        userId: actorId,
-        details: { name: name ?? current.name, role: role ?? current.role },
-      })
-
-      res.status(200).json({
-        message: "User updated successfully",
-        user: updated,
-      })
-    } catch (error) {
-      logger.error("Failed to update user", error)
-      res.status(500).json({ error: "Failed to update user" })
-    }
-  }
-
-  /**
-   * SOFT DELETE USER
-   */
-  async delete(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params
-      const actorId = (req as any).userId
-
-      if (id === actorId) {
-        res.status(400).json({ error: "Cannot delete own account" })
-        return
-      }
-
-      const user = await usersRepository.getUserById(id)
-
-      if (!user) {
-        res.status(404).json({ error: "User not found" })
-        return
-      }
-
-      await usersRepository.softDeleteUser(id)
-
-      await auditRepository.createAuditLog({
-        action: "USER_DELETED",
-        entity: "User",
-        entityId: id,
-        userId: actorId,
-        details: { email: user.email },
-      })
-
-      res.status(200).json({ message: "User deleted successfully" })
-    } catch (error) {
-      logger.error("Failed to delete user", error)
-      res.status(500).json({ error: "Failed to delete user" })
-    }
-  }
-
-  /**
-   * ENROLL IN 2FA
-   */
-  async enrollTwoFA(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params
-
-      const user = await usersRepository.getUserById(id)
-
-      if (!user) {
-        res.status(404).json({ error: "User not found" })
-        return
-      }
-
-      const secret: TwoFASecret = await twoFAService.generateSecret(user.email)
-
-      res.status(200).json({
-        message: "Scan QR code in authenticator app",
-        secret: secret.secret,
-        qrCode: secret.qrCode,
-        backupCodes: secret.backupCodes,
-      })
-    } catch (error) {
-      logger.error("Failed to enroll 2FA", error)
-      res.status(500).json({ error: "Failed to enroll 2FA" })
-    }
-  }
-
-  /**
-   * VERIFY 2FA ENROLLMENT
-   */
-  async verifyTwoFAEnrollment(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params
-      const { secret, token } = req.body
-      const actorId = (req as any).userId
-
-      if (!secret || !token) {
-        res.status(400).json({ error: "Missing secret or token" })
-        return
-      }
-
-      const isValid = twoFAService.verifyToken(secret, token)
-      if (!isValid.valid) {
-        res.status(400).json({ error: "Invalid verification code" })
-        return
-      }
-
-      const encrypted = encryptionService.encryptToJson(secret)
-
-      const user = await usersRepository.updateUser(id, {
-        twoFactorSecret: encrypted as any,
-        twoFactorEnabled: true,
-        twoFactorVerified: true,
-      })
-
-      await auditRepository.createAuditLog({
-        action: "2FA_ENABLED",
-        entity: "User",
-        entityId: id,
-        userId: actorId,
-      })
-
-      res.status(200).json({
-        message: "2FA enabled successfully",
-        user,
-      })
-    } catch (error) {
-      logger.error("Failed to verify 2FA enrollment", error)
-      res.status(500).json({ error: "Failed to verify 2FA enrollment" })
-    }
-  }
-
-  /**
-   * CHANGE PASSWORD
-   */
-  async changePassword(req: Request, res: Response): Promise<void> {
-    try {
-      const userId = (req as any).userId
-      const { currentPassword, newPassword } = req.body as ChangePasswordRequest
-
-      if (!currentPassword || !newPassword) {
-        res.status(400).json({ error: "Both passwords required" })
-        return
-      }
-
-      const strength = AuthController.validatePasswordStrength(newPassword)
+      const strength = validatePasswordStrength(newPassword);
       if (!strength.valid) {
-        res.status(400).json({ error: "Weak password", details: strength.errors })
-        return
+        return res
+          .status(400)
+          .json({ error: "Weak password", details: strength.errors });
       }
 
-      const user = await usersRepository.getUserById(userId)
+      const user = await usersRepository.getUserById(userId);
+      if (!user) return res.status(404).json({ error: "User not found" });
 
-      if (!user) {
-        res.status(404).json({ error: "User not found" })
-        return
-      }
+      const ok = await bcryptjs.compare(currentPassword, user.passwordHash);
+      if (!ok) return res.status(401).json({ error: "Invalid current password" });
 
-      const matches = await bcryptjs.compare(currentPassword, user.passwordHash)
+      const hash = await bcryptjs.hash(newPassword, 12);
 
-      if (!matches) {
-        res.status(401).json({ error: "Current password incorrect" })
-        return
-      }
-
-      const hash = await bcryptjs.hash(newPassword, 12)
-
-      await usersRepository.updateUser(userId, { passwordHash: hash as any })
+      await usersRepository.updateUser(userId, {
+        passwordHash: hash
+      });
 
       await auditRepository.createAuditLog({
         action: "PASSWORD_CHANGED",
         entity: "User",
         entityId: userId,
-        userId,
-      })
+        userId
+      });
 
-      res.status(200).json({ message: "Password changed" })
-    } catch (error) {
-      logger.error("Failed to change password", error)
-      res.status(500).json({ error: "Failed to change password" })
+      res.json({ message: "Password changed" });
+    } catch (err) {
+      logger.error("changePassword failed", err);
+      res.status(500).json({ error: "Failed to change password" });
     }
   }
 
-  /**
-   * GET CURRENT USER PROFILE
-   */
-  async getProfile(req: Request, res: Response): Promise<void> {
+  //
+  // -------- DELETE USER ----------
+  //
+  async delete(req: Request, res: Response) {
     try {
-      const userId = (req as any).userId
+      const { id } = req.params;
+      const actorId = (req as any).userId;
 
-      const user = await usersRepository.getUserById(userId)
+      if (id === actorId)
+        return res.status(400).json({ error: "Cannot delete self" });
 
-      if (!user) {
-        res.status(404).json({ error: "User not found" })
-        return
+      const user = await usersRepository.getUserById(id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+
+      // prevent deleting last super admin
+      if (user.role === "SUPER_ADMIN") {
+        const remaining = await usersRepository.countSuperAdmins();
+        if (remaining <= 1) {
+          return res
+            .status(400)
+            .json({ error: "Cannot delete last SUPER_ADMIN" });
+        }
       }
 
-      const { passwordHash, ...profile } = user
-      res.status(200).json(profile)
-    } catch (error) {
-      logger.error("Failed to get profile", error)
-      res.status(500).json({ error: "Failed to retrieve profile" })
-    }
-  }
-
-  /**
-   * UPDATE USER PROFILE (onboarding fields)
-   */
-  async updateProfile(req: Request, res: Response): Promise<void> {
-    try {
-      const userId = (req as any).userId
-      const { phone, googleEmail, gmbAccountId } = req.body as UpdateProfileRequest
-
-      const user = await usersRepository.getUserById(userId)
-
-      if (!user) {
-        res.status(404).json({ error: "User not found" })
-        return
-      }
-
-      const updated = await usersRepository.updateUser(userId, {
-        ...(phone && { phoneNumber: phone }),
-        ...(googleEmail && { googleEmail }),
-        ...(gmbAccountId && { gmbAccountId }),
-      })
+      await usersRepository.softDeleteUser(id);
 
       await auditRepository.createAuditLog({
-        action: "PROFILE_UPDATED",
+        action: "USER_DELETED",
         entity: "User",
-        entityId: userId,
-        userId,
-        details: { phone, googleEmail, gmbAccountId },
-      })
+        entityId: id,
+        userId: actorId
+      });
 
-      const { passwordHash, ...profile } = updated
-      res.status(200).json({
-        message: "Profile updated successfully",
-        user: profile,
-      })
-    } catch (error) {
-      logger.error("Failed to update profile", error)
-      res.status(500).json({ error: "Failed to update profile" })
+      res.json({ message: "User deleted" });
+    } catch (err) {
+      logger.error("delete failed", err);
+      res.status(500).json({ error: "Delete failed" });
     }
   }
 }
 
-export const usersController = new UsersController()
+export const usersController = new UsersController();

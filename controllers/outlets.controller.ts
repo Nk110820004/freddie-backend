@@ -1,227 +1,213 @@
-import { Request, Response } from 'express';
+import { Request, Response } from "express";
+import { OutletRepository } from "../repository/outlet.repo";
+import { billingRepository } from "../repository/billing.repo";
+import { auditRepository } from "../repository/audit.repo";
+import { ManualReviewQueueRepository } from "../repository/manual-review-queue.repo";
+import { prisma } from "../database";
+import { logger } from "../utils/logger";
+import {
+  ApiStatus,
+  OnboardingStatus,
+  SubscriptionStatus,
+  UserRole
+} from "@prisma/client";
 
-import { outletsRepository } from '../repository/outlets.repo';
-import { reviewsRepository } from '../repository/reviews.repo';
-import { billingRepository } from '../repository/billing.repo';
-import { auditRepository } from '../repository/audit.repo';
-
-import { logger } from '../utils/logger';
-
-export interface CreateOutletRequest {
-  name: string;
-  userId: string;
-}
-
-export interface UpdateOutletRequest {
-  name?: string;
-  status?: 'ACTIVE' | 'PAUSED' | 'DISABLED';
-}
+const outletRepo = new OutletRepository(prisma);
+const manualQueueRepo = new ManualReviewQueueRepository(prisma);
 
 export class OutletsController {
-  /**
-   * GET all outlets
-   */
-  async getAll(req: Request, res: Response): Promise<void> {
+  //
+  // -------- ADMIN — CREATE OUTLET (ONBOARDING START) --------
+  //
+  async create(req: Request, res: Response) {
     try {
-      const outlets = await outletsRepository.getAllOutlets();
+      const actor = (req as any).user;
 
-      res.status(200).json(outlets);
-    } catch (err) {
-      logger.error('Failed to get outlets', err);
-      res.status(500).json({ error: 'Failed to retrieve outlets' });
-    }
-  }
-
-  /**
-   * GET outlet by ID
-   */
-  async getById(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params;
-
-      const outlet = await outletsRepository.getOutletById(id);
-
-      if (!outlet) {
-        res.status(404).json({ error: 'Outlet not found' });
-        return;
+      if (actor.role !== "ADMIN" && actor.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Admin access required" });
       }
 
-      res.status(200).json(outlet);
-    } catch (err) {
-      logger.error('Failed to get outlet', err);
-      res.status(500).json({ error: 'Failed to retrieve outlet' });
-    }
-  }
-
-  /**
-   * CREATE outlet
-   */
-  async create(req: Request, res: Response): Promise<void> {
-    try {
-      const actorId = (req as any).userId;
-
-      const { name, userId } = req.body as CreateOutletRequest;
-
-      if (!name || !userId) {
-        res.status(400).json({
-          error: 'Name and User ID are required',
-        });
-        return;
-      }
-
-      // create outlet
-      const outlet = await outletsRepository.createOutlet({
+      const {
         name,
         userId,
+        primaryContactName,
+        contactEmail,
+        contactPhone,
+        category,
+        subscriptionPlan
+      } = req.body;
+
+      if (
+        !name ||
+        !userId ||
+        !primaryContactName ||
+        !contactEmail ||
+        !contactPhone
+      ) {
+        return res.status(400).json({
+          error:
+            "name, userId, primaryContactName, contactEmail, contactPhone are required"
+        });
+      }
+
+      const outlet = await outletRepo.createOutlet({
+        name,
+        userId,
+        primaryContactName,
+        contactEmail,
+        contactPhone,
+        category: category ?? "OTHER",
+        subscriptionPlan: subscriptionPlan ?? "MONTHLY"
       });
 
-      // create billing record
-      await billingRepository.createBilling({
-        outletId: outlet.id,
-        plan: 'TRIAL',
-      });
-
-      // audit log
       await auditRepository.createAuditLog({
-        action: 'OUTLET_CREATED',
-        entity: 'Outlet',
+        action: "OUTLET_ONBOARDING_STARTED",
+        entity: "Outlet",
         entityId: outlet.id,
-        userId: actorId,
-        details: { name },
+        userId: actor.id
       });
 
       res.status(201).json({
-        message: 'Outlet created successfully',
-        outlet,
+        message: "Outlet created in onboarding state",
+        outlet
       });
     } catch (err) {
-      logger.error('Failed to create outlet', err);
-      res.status(500).json({ error: 'Failed to create outlet' });
+      logger.error("create outlet failed", err);
+      res.status(500).json({ error: "Failed to create outlet" });
     }
   }
 
-  /**
-   * UPDATE outlet
-   */
-  async update(req: Request, res: Response): Promise<void> {
+  //
+  // -------- MARK ONBOARDING COMPLETE --------
+  //
+  async completeOnboarding(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const actorId = (req as any).userId;
+      const actor = (req as any).user;
 
-      const data = req.body as UpdateOutletRequest;
+      const outlet = await outletRepo.completeOnboarding(id);
 
-      const outlet = await outletsRepository.getOutletById(id);
+      await auditRepository.createAuditLog({
+        action: "OUTLET_ONBOARDING_COMPLETED",
+        entity: "Outlet",
+        entityId: id,
+        userId: actor.id
+      });
 
-      if (!outlet) {
-        res.status(404).json({ error: 'Outlet not found' });
-        return;
+      res.json({
+        message: "Onboarding completed",
+        outlet
+      });
+    } catch (err) {
+      logger.error("completeOnboarding failed", err);
+      res.status(400).json({ error: (err as any).message });
+    }
+  }
+
+  //
+  // -------- MANUAL SUBSCRIPTION OVERRIDE (ADMIN PANEL) --------
+  //
+  async markSubscriptionStatus(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { status, remark } = req.body;
+      const actor = (req as any).user;
+
+      if (actor.role !== "ADMIN" && actor.role !== "SUPER_ADMIN") {
+        return res.status(403).json({ error: "Admin access required" });
       }
 
-      const updated = await outletsRepository.updateOutlet(id, {
-        ...data,
+      if (!Object.values(SubscriptionStatus).includes(status)) {
+        return res.status(400).json({ error: "Invalid subscription status" });
+      }
+
+      const billing = await billingRepository.updateStatus(id, status);
+
+      await auditRepository.createAuditLog({
+        action: "SUBSCRIPTION_STATUS_MANUAL_CHANGE",
+        entity: "Billing",
+        entityId: billing.id,
+        userId: actor.id,
+        details: { status, remark }
+      });
+
+      res.json({ message: "Subscription updated", billing });
+    } catch (err) {
+      logger.error("Subscription override failed", err);
+      res.status(500).json({ error: "Failed to change subscription" });
+    }
+  }
+
+  //
+  // -------- ENABLE/DISABLE API (Automation gating) --------
+  //
+  async setApiStatus(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { enable } = req.body;
+      const actor = (req as any).user;
+
+      const outlet = await outletRepo.getOutletById(id);
+
+      if (!outlet) {
+        return res.status(404).json({ error: "Outlet not found" });
+      }
+
+      if (enable) {
+        if (
+          outlet.onboardingStatus !== OnboardingStatus.COMPLETED ||
+          outlet.billing?.status !== SubscriptionStatus.ACTIVE
+        ) {
+          return res.status(400).json({
+            error:
+              "API can be enabled only when onboarding completed and subscription ACTIVE"
+          });
+        }
+      }
+
+      const updated = await prisma.outlet.update({
+        where: { id },
+        data: { apiStatus: enable ? ApiStatus.ENABLED : ApiStatus.DISABLED }
       });
 
       await auditRepository.createAuditLog({
-        action: 'OUTLET_UPDATED',
-        entity: 'Outlet',
+        action: "API_STATUS_CHANGED",
+        entity: "Outlet",
         entityId: id,
-        userId: actorId,
-        details: data,
+        userId: actor.id,
+        details: { apiStatus: updated.apiStatus }
       });
 
-      res.status(200).json({
-        message: 'Outlet updated successfully',
-        outlet: updated,
-      });
+      res.json({ message: "Updated API status", outlet: updated });
     } catch (err) {
-      logger.error('Failed to update outlet', err);
-      res.status(500).json({ error: 'Failed to update outlet' });
+      logger.error("API status change failed", err);
+      res.status(500).json({ error: "Failed to update API status" });
     }
   }
 
-  /**
-   * DELETE outlet
-   */
-  async delete(req: Request, res: Response): Promise<void> {
+  //
+  // -------- SAFE DELETE OUTLET --------
+  //
+  async delete(req: Request, res: Response) {
     try {
       const { id } = req.params;
-      const actorId = (req as any).userId;
+      const actor = (req as any).user;
 
-      const outlet = await outletsRepository.getOutletById(id);
+      await manualQueueRepo.deleteByOutlet(id);
 
-      if (!outlet) {
-        res.status(404).json({ error: 'Outlet not found' });
-        return;
-      }
-
-      // ⚠️ cascade already handled by DB, but we also ensure cleanup
-      await reviewsRepository.deleteReview(id).catch(() => null);
-
-      await outletsRepository.deleteOutlet(id);
+      await prisma.outlet.delete({ where: { id } });
 
       await auditRepository.createAuditLog({
-        action: 'OUTLET_DELETED',
-        entity: 'Outlet',
+        action: "OUTLET_DELETED",
+        entity: "Outlet",
         entityId: id,
-        userId: actorId,
-        details: { name: outlet.name },
+        userId: actor.id
       });
 
-      res.status(200).json({
-        message: 'Outlet deleted successfully',
-      });
+      res.json({ message: "Outlet deleted" });
     } catch (err) {
-      logger.error('Failed to delete outlet', err);
-      res.status(500).json({ error: 'Failed to delete outlet' });
-    }
-  }
-
-  /**
-   * Outlet health
-   */
-  async getHealth(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params;
-
-      const result = await outletsRepository.getOutletHealthMetrics(id);
-
-      if (!result) {
-        res.status(404).json({ error: 'Outlet not found' });
-        return;
-      }
-
-      res.status(200).json(result);
-    } catch (err) {
-      logger.error('Failed to fetch outlet health', err);
-      res.status(500).json({ error: 'Failed to retrieve outlet health' });
-    }
-  }
-
-  /**
-   * Get outlet reviews (paginated)
-   */
-  async getReviews(req: Request, res: Response): Promise<void> {
-    try {
-      const { id } = req.params;
-      const { limit = '50', offset = '0' } = req.query;
-
-      const parsedLimit = Math.min(parseInt(limit as string) || 50, 500);
-      const parsedOffset = parseInt(offset as string) || 0;
-
-      const reviews = await reviewsRepository.getReviewsByOutlet(
-        id,
-        parsedLimit,
-        parsedOffset
-      );
-
-      res.status(200).json({
-        data: reviews,
-        limit: parsedLimit,
-        offset: parsedOffset,
-      });
-    } catch (err) {
-      logger.error('Failed to fetch outlet reviews', err);
-      res.status(500).json({ error: 'Failed to retrieve outlet reviews' });
+      logger.error("delete outlet failed", err);
+      res.status(500).json({ error: "Failed to delete outlet" });
     }
   }
 }

@@ -1,5 +1,5 @@
 import { prisma } from "./base.repo"
-import type { Billing, BillingPlan } from "@prisma/client"
+import type { Billing, SubscriptionStatus } from "@prisma/client"
 
 export class BillingRepository {
   async getBillingByOutletId(outletId: string): Promise<Billing | null> {
@@ -10,7 +10,7 @@ export class BillingRepository {
 
   async createBilling(data: {
     outletId: string
-    plan?: BillingPlan
+    status?: SubscriptionStatus
     trialEndsAt?: Date
   }): Promise<Billing> {
     const TRIAL_DAYS = 30
@@ -20,17 +20,17 @@ export class BillingRepository {
     return prisma.billing.create({
       data: {
         outletId: data.outletId,
-        plan: data.plan ?? "TRIAL",
+        status: data.status ?? "TRIAL",
         trialEndsAt,
       },
     })
   }
 
-  async updateBillingPlan(outletId: string, plan: BillingPlan): Promise<Billing> {
+  async updateSubscriptionStatus(outletId: string, status: SubscriptionStatus): Promise<Billing> {
     return prisma.billing.update({
       where: { outletId },
       data: {
-        plan,
+        status,
         updatedAt: new Date(),
       },
     })
@@ -41,8 +41,7 @@ export class BillingRepository {
       where: { outletId },
       data: {
         paidUntil,
-        plan: "PAID",
-        isActive: true,
+        status: "ACTIVE",
         updatedAt: new Date(),
       },
     })
@@ -52,7 +51,7 @@ export class BillingRepository {
     return prisma.billing.update({
       where: { outletId },
       data: {
-        isActive: false,
+        status: "INACTIVE",
         updatedAt: new Date(),
       },
     })
@@ -62,7 +61,7 @@ export class BillingRepository {
     return prisma.billing.update({
       where: { outletId },
       data: {
-        isActive: true,
+        status: "ACTIVE",
         updatedAt: new Date(),
       },
     })
@@ -71,8 +70,7 @@ export class BillingRepository {
   async getActivePaidSubscriptions(): Promise<Billing[]> {
     return prisma.billing.findMany({
       where: {
-        plan: "PAID",
-        isActive: true,
+        status: "ACTIVE",
       },
       include: {
         outlet: true,
@@ -86,7 +84,7 @@ export class BillingRepository {
 
     return prisma.billing.findMany({
       where: {
-        plan: "TRIAL",
+        status: "TRIAL",
         trialEndsAt: {
           lte: threshold,
           gt: now,
@@ -102,7 +100,7 @@ export class BillingRepository {
     return prisma.billing.findMany({
       where: {
         paidUntil: { lt: new Date() },
-        isActive: true,
+        status: "ACTIVE",
       },
       include: {
         outlet: true,
@@ -117,13 +115,13 @@ export class BillingRepository {
 
     const now = new Date()
 
-    if (billing.plan === "TRIAL" && billing.trialEndsAt && billing.trialEndsAt < now) {
-      await this.deactivateBilling(outletId)
+    if (billing.status === "TRIAL" && billing.trialEndsAt && billing.trialEndsAt < now) {
+      await this.updateSubscriptionStatus(outletId, "INACTIVE")
       return
     }
 
-    if (billing.plan === "PAID" && billing.paidUntil && billing.paidUntil < now) {
-      await this.deactivateBilling(outletId)
+    if (billing.status === "ACTIVE" && billing.paidUntil && billing.paidUntil < now) {
+      await this.updateSubscriptionStatus(outletId, "PAST_DUE")
       return
     }
   }
@@ -140,14 +138,14 @@ export class BillingRepository {
     })
 
     const total = billings.length
-    const activePaid = billings.filter((b) => b.plan === "PAID" && b.isActive).length
-    const trials = billings.filter((b) => b.plan === "TRIAL").length
-    const inactive = billings.filter((b) => !b.isActive).length
+    const activePaid = billings.filter((b) => b.status === "ACTIVE").length
+    const trials = billings.filter((b) => b.status === "TRIAL").length
+    const inactive = billings.filter((b) => b.status === "INACTIVE").length
     const totalReviews = billings.reduce((sum, b) => sum + b.outlet.reviews.length, 0)
 
     const MONTHLY_PRICE = 29
     const monthlyRecurringRevenue = billings
-      .filter((b) => b.plan === "PAID" && b.isActive)
+      .filter((b) => b.status === "ACTIVE")
       .reduce((sum) => sum + MONTHLY_PRICE, 0)
 
     return {

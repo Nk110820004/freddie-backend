@@ -1,214 +1,140 @@
 import {
   type PrismaClient,
-  SubscriptionStatus,
-  BillingStatus,
-  ApiStatus,
-  OnboardingStatus,
   type BusinessCategory,
   type SubscriptionPlan,
-} from "@prisma/client"
-import { BaseRepository } from "./base.repo"
+  SubscriptionStatus,
+  OnboardingStatus,
+  ApiStatus
+} from "@prisma/client";
+import { BaseRepository } from "./base.repo";
 
 export interface CreateOutletDTO {
-  name: string
-  groupName?: string
-  primaryContactName: string
-  contactEmail: string
-  contactPhone: string
-  category: BusinessCategory
-  subscriptionPlan: SubscriptionPlan
-  subscriptionStatus?: SubscriptionStatus
-  userId: string
-  googlePlaceId?: string
-  googleLocationName?: string
-}
-
-export interface UpdateOutletSubscriptionDTO {
-  subscriptionStatus?: SubscriptionStatus
-  billingStatus?: BillingStatus
-  apiStatus?: ApiStatus
-  remarks: string
+  name: string;
+  groupName?: string;
+  primaryContactName: string;
+  contactEmail: string;
+  contactPhone: string;
+  category: BusinessCategory;
+  subscriptionPlan: SubscriptionPlan;
+  userId: string;
+  googlePlaceId?: string;
+  googleLocationName?: string;
 }
 
 export class OutletRepository extends BaseRepository {
   constructor(prisma: PrismaClient) {
-    super(prisma)
+    super(prisma);
   }
 
+  /**
+   * Create outlet + billing atomically
+   * Enforces uniqueness & onboarding rules
+   */
   async createOutlet(data: CreateOutletDTO) {
-    const { userId, ...outletData } = data
+    return this.prisma.$transaction(async (tx) => {
+      // Prevent duplicate contact phone/email
+      const existing = await tx.outlet.findFirst({
+        where: {
+          OR: [
+            { contactEmail: data.contactEmail },
+            { contactPhone: data.contactPhone }
+          ]
+        }
+      });
 
-    // Enforce: new outlets start with DISABLED API
-    const outlet = await this.prisma.outlet.create({
-      data: {
-        ...outletData,
-        apiStatus: ApiStatus.DISABLED,
-        onboardingStatus: OnboardingStatus.PENDING,
-        subscriptionStatus: data.subscriptionStatus || SubscriptionStatus.TRIAL,
-        billingStatus: BillingStatus.ACTIVE,
-        user: {
-          connect: { id: userId },
-        },
-      },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
-            whatsappNumber: true,
-          },
-        },
-      },
-    })
-
-    return outlet
-  }
-
-  async updateOutletSubscription(outletId: string, adminId: string, updates: UpdateOutletSubscriptionDTO) {
-    const { remarks, ...updateData } = updates
-
-    // Get current state for audit
-    const currentOutlet = await this.prisma.outlet.findUnique({
-      where: { id: outletId },
-      select: {
-        subscriptionStatus: true,
-        billingStatus: true,
-        apiStatus: true,
-      },
-    })
-
-    if (!currentOutlet) {
-      throw new Error("Outlet not found")
-    }
-
-    // Business rule enforcement
-    if (updateData.apiStatus === ApiStatus.ENABLED) {
-      const finalSubscriptionStatus = updateData.subscriptionStatus || currentOutlet.subscriptionStatus
-      const finalBillingStatus = updateData.billingStatus || currentOutlet.billingStatus
-
-      if (![SubscriptionStatus.PAID, SubscriptionStatus.PARTIAL].includes(finalSubscriptionStatus)) {
-        throw new Error("API cannot be ENABLED unless subscription is PAID or PARTIAL")
+      if (existing) {
+        throw new Error("Outlet with same email or phone already exists");
       }
 
-      if (finalBillingStatus !== BillingStatus.ACTIVE) {
-        throw new Error("API cannot be ENABLED unless billing is ACTIVE")
-      }
-    }
+      // Create outlet
+      const outlet = await tx.outlet.create({
+        data: {
+          name: data.name,
+          groupName: data.groupName,
+          primaryContactName: data.primaryContactName,
+          contactEmail: data.contactEmail,
+          contactPhone: data.contactPhone,
+          category: data.category,
+          subscriptionPlan: data.subscriptionPlan,
 
-    // If subscription becomes UNPAID, auto-disable API
-    if (updateData.subscriptionStatus === SubscriptionStatus.UNPAID) {
-      updateData.apiStatus = ApiStatus.DISABLED
-    }
+          apiStatus: ApiStatus.DISABLED,
+          onboardingStatus: OnboardingStatus.PENDING,
+          subscriptionStatus: SubscriptionStatus.TRIAL,
 
-    // Perform update in transaction with audit log
-    const result = await this.prisma.$transaction(async (tx) => {
-      const updated = await tx.outlet.update({
-        where: { id: outletId },
-        data: updateData,
+          googlePlaceId: data.googlePlaceId,
+          googleLocationName: data.googleLocationName,
+
+          user: { connect: { id: data.userId } }
+        },
         include: {
           user: {
             select: {
               id: true,
               name: true,
               email: true,
-              whatsappNumber: true,
-            },
-          },
-        },
-      })
+              whatsappNumber: true
+            }
+          }
+        }
+      });
 
-      // Create audit entries for each changed field
-      const auditPromises = []
+      // Create matching billing record atomically
+      await tx.billing.create({
+        data: {
+          outletId: outlet.id,
+          status: SubscriptionStatus.TRIAL
+        }
+      });
 
-      if (updateData.subscriptionStatus && updateData.subscriptionStatus !== currentOutlet.subscriptionStatus) {
-        auditPromises.push(
-          tx.subscriptionAuditLog.create({
-            data: {
-              outletId,
-              adminId,
-              action: "SUBSCRIPTION_STATUS_CHANGE",
-              oldValue: currentOutlet.subscriptionStatus,
-              newValue: updateData.subscriptionStatus,
-              remarks,
-            },
-          }),
-        )
-      }
-
-      if (updateData.billingStatus && updateData.billingStatus !== currentOutlet.billingStatus) {
-        auditPromises.push(
-          tx.subscriptionAuditLog.create({
-            data: {
-              outletId,
-              adminId,
-              action: "BILLING_STATUS_CHANGE",
-              oldValue: currentOutlet.billingStatus,
-              newValue: updateData.billingStatus,
-              remarks,
-            },
-          }),
-        )
-      }
-
-      if (updateData.apiStatus && updateData.apiStatus !== currentOutlet.apiStatus) {
-        auditPromises.push(
-          tx.subscriptionAuditLog.create({
-            data: {
-              outletId,
-              adminId,
-              action: "API_STATUS_CHANGE",
-              oldValue: currentOutlet.apiStatus,
-              newValue: updateData.apiStatus,
-              remarks,
-            },
-          }),
-        )
-      }
-
-      await Promise.all(auditPromises)
-
-      return updated
-    })
-
-    return result
+      return outlet;
+    });
   }
 
+  /**
+   * Finalize onboarding when rules are satisfied
+   */
   async completeOnboarding(outletId: string) {
     const outlet = await this.prisma.outlet.findUnique({
       where: { id: outletId },
-    })
+      include: { billing: true }
+    });
 
-    if (!outlet) {
-      throw new Error("Outlet not found")
-    }
+    if (!outlet) throw new Error("Outlet not found");
 
-    // Validate required fields
     if (!outlet.primaryContactName || !outlet.contactEmail || !outlet.contactPhone) {
-      throw new Error("Cannot complete onboarding: missing required contact fields")
+      throw new Error("Missing required onboarding fields");
     }
 
-    if (outlet.subscriptionStatus === SubscriptionStatus.UNPAID) {
-      throw new Error("Cannot complete onboarding with UNPAID subscription")
+    if (!outlet.billing) {
+      throw new Error("Missing billing record for outlet");
+    }
+
+    if (
+      outlet.billing.status === "CANCELED" ||
+      outlet.billing.status === "INACTIVE"
+    ) {
+      throw new Error("Cannot complete onboarding with inactive subscription");
     }
 
     return this.prisma.outlet.update({
       where: { id: outletId },
       data: {
-        onboardingStatus: OnboardingStatus.COMPLETED,
-      },
-    })
+        onboardingStatus: OnboardingStatus.COMPLETED
+      }
+    });
   }
 
+  /**
+   * Outlets allowed for automation system
+   */
   async getEligibleOutlets() {
     return this.prisma.outlet.findMany({
       where: {
         apiStatus: ApiStatus.ENABLED,
-        billingStatus: BillingStatus.ACTIVE,
-        subscriptionStatus: {
-          in: [SubscriptionStatus.PAID, SubscriptionStatus.PARTIAL],
-        },
         onboardingStatus: OnboardingStatus.COMPLETED,
+        billing: {
+          status: SubscriptionStatus.ACTIVE
+        }
       },
       include: {
         user: {
@@ -216,41 +142,11 @@ export class OutletRepository extends BaseRepository {
             googleEmail: true,
             googleRefreshToken: true,
             gmbAccountId: true,
-            whatsappNumber: true,
-          },
-        },
-      },
-    })
-  }
-
-  async checkAndDisableExpiredTrials() {
-    const now = new Date()
-
-    const expiredTrials = await this.prisma.outlet.findMany({
-      where: {
-        subscriptionStatus: SubscriptionStatus.TRIAL,
-        billing: {
-          trialEndsAt: {
-            lte: now,
-          },
-        },
-      },
-      include: {
-        billing: true,
-      },
-    })
-
-    const updatePromises = expiredTrials.map((outlet) =>
-      this.prisma.outlet.update({
-        where: { id: outlet.id },
-        data: {
-          subscriptionStatus: SubscriptionStatus.EXPIRED,
-          apiStatus: ApiStatus.DISABLED,
-        },
-      }),
-    )
-
-    return Promise.all(updatePromises)
+            whatsappNumber: true
+          }
+        }
+      }
+    });
   }
 
   async getOutletById(id: string) {
@@ -258,9 +154,9 @@ export class OutletRepository extends BaseRepository {
       where: { id },
       include: {
         user: true,
-        billing: true,
-      },
-    })
+        billing: true
+      }
+    });
   }
 
   async getAllOutlets() {
@@ -271,19 +167,41 @@ export class OutletRepository extends BaseRepository {
             id: true,
             name: true,
             email: true,
-            role: true,
-          },
+            role: true
+          }
         },
         billing: true,
-        _count: {
-          select: {
-            reviews: true,
-          },
-        },
+        _count: { select: { reviews: true } }
       },
-      orderBy: {
-        createdAt: "desc",
-      },
-    })
+      orderBy: { createdAt: "desc" }
+    });
+  }
+
+  /**
+   * Enforce API enable rules – MUST have active subscription
+   */
+  async setApiStatus(outletId: string, apiStatus: ApiStatus) {
+    return this.prisma.$transaction(async (tx) => {
+      const outlet = await tx.outlet.findUnique({
+        where: { id: outletId },
+        include: { billing: true }
+      });
+
+      if (!outlet) throw new Error("Outlet not found");
+
+      if (apiStatus === ApiStatus.ENABLED) {
+        if (
+          !outlet.billing ||
+          outlet.billing.status !== SubscriptionStatus.ACTIVE
+        ) {
+          throw new Error("Cannot enable API without active subscription");
+        }
+      }
+
+      return tx.outlet.update({
+        where: { id: outletId },
+        data: { apiStatus }
+      });
+    });
   }
 }

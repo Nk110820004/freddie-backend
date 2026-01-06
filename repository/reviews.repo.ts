@@ -1,207 +1,184 @@
-import { prisma } from './base.repo';
-import { Review, ReviewStatus } from '@prisma/client';
+import { prisma } from "./base.repo";
+import {
+  Review,
+  ReviewStatus,
+  ManualQueueStatus
+} from "@prisma/client";
 
-/**
- * Fetch all reviews (admin global view)
- */
-export async function getAllReviews(): Promise<Review[]> {
-  return prisma.review.findMany({
-    orderBy: { createdAt: 'desc' },
-  });
+export class ReviewsRepository {
+  //
+  // -------- BASIC CRUD ----------
+  //
+
+  async getAll() {
+    return prisma.review.findMany({
+      orderBy: { createdAt: "desc" }
+    });
+  }
+
+  async getById(id: string) {
+    return prisma.review.findUnique({
+      where: { id },
+      include: { outlet: true }
+    });
+  }
+
+  async getByOutlet(outletId: string, limit = 50, offset = 0) {
+    return prisma.review.findMany({
+      where: { outletId },
+      orderBy: { createdAt: "desc" },
+      take: limit,
+      skip: offset
+    });
+  }
+
+  //
+  // -------- CREATION WITH RATING RULE ENGINE ----------
+  //
+
+  async createReview(data: {
+    outletId: string;
+    rating: number;
+    customerName: string;
+    reviewText: string;
+    googleReviewId?: string;
+  }) {
+    return prisma.$transaction(async (tx) => {
+      // create base review
+      const review = await tx.review.create({
+        data: {
+          outletId: data.outletId,
+          rating: data.rating,
+          customerName: data.customerName,
+          reviewText: data.reviewText,
+          googleReviewId: data.googleReviewId,
+          status:
+            data.rating >= 4
+              ? ReviewStatus.PENDING // awaiting AI auto-reply worker
+              : ReviewStatus.MANUAL_PENDING // will enter manual queue
+        }
+      });
+
+      // ratings 1–3 → add to manual review queue
+      if (data.rating <= 3) {
+        await tx.manualReviewQueue.create({
+          data: {
+            reviewId: review.id,
+            outletId: data.outletId,
+            status: ManualQueueStatus.PENDING
+          }
+        });
+      }
+
+      return review;
+    });
+  }
+
+  //
+  // -------- STATUS CHANGE HELPERS ----------
+  //
+
+  async markAsAutoReplied(reviewId: string, aiReplyText: string) {
+    return prisma.review.update({
+      where: { id: reviewId },
+      data: {
+        status: ReviewStatus.AUTO_REPLIED,
+        aiReplyText,
+        updatedAt: new Date()
+      }
+    });
+  }
+
+  async markAsClosed(reviewId: string) {
+    return prisma.review.update({
+      where: { id: reviewId },
+      data: {
+        status: ReviewStatus.CLOSED,
+        updatedAt: new Date()
+      }
+    });
+  }
+
+  async saveManualReply(reviewId: string, reply: string) {
+    return prisma.$transaction(async (tx) => {
+      await tx.review.update({
+        where: { id: reviewId },
+        data: {
+          status: ReviewStatus.CLOSED,
+          manualReplyText: reply
+        }
+      });
+
+      await tx.manualReviewQueue.update({
+        where: { reviewId },
+        data: {
+          status: ManualQueueStatus.RESPONDED
+        }
+      });
+    });
+  }
+
+  //
+  // -------- QUEUE QUERIES ----------
+  //
+
+  async getManualQueueItems() {
+    return prisma.manualReviewQueue.findMany({
+      where: { status: ManualQueueStatus.PENDING },
+      include: {
+        review: true,
+        outlet: true,
+        assignedAdmin: true
+      },
+      orderBy: { createdAt: "asc" }
+    });
+  }
+
+  //
+  // -------- ANALYTICS ----------
+  //
+
+  async getAnalytics(outletId: string, days = 30) {
+    const from = new Date();
+    from.setDate(from.getDate() - days);
+
+    const reviews = await prisma.review.findMany({
+      where: { outletId, createdAt: { gte: from } }
+    });
+
+    const total = reviews.length;
+
+    const avgRating =
+      total === 0
+        ? 0
+        : reviews.reduce((s, r) => s + r.rating, 0) / total;
+
+    return {
+      total,
+      avgRating: Number(avgRating.toFixed(2)),
+      closed: reviews.filter(r => r.status === "CLOSED").length,
+      autoReplied: reviews.filter(r => r.status === "AUTO_REPLIED").length,
+      manualPending: reviews.filter(r => r.status === "MANUAL_PENDING").length,
+
+      ratingDistribution: {
+        five: reviews.filter(r => r.rating === 5).length,
+        four: reviews.filter(r => r.rating === 4).length,
+        three: reviews.filter(r => r.rating === 3).length,
+        two: reviews.filter(r => r.rating === 2).length,
+        one: reviews.filter(r => r.rating === 1).length
+      },
+
+      periodDays: days
+    };
+  }
+
+  //
+  // -------- HARD DELETE ----------
+  //
+
+  async delete(id: string): Promise<Review> {
+    return prisma.review.delete({ where: { id } });
+  }
 }
 
-/**
- * Reviews for a specific outlet
- */
-export async function getReviewsByOutlet(
-  outletId: string,
-  limit = 50,
-  offset = 0
-): Promise<Review[]> {
-  return prisma.review.findMany({
-    where: { outletId },
-    orderBy: { createdAt: 'desc' },
-    take: limit,
-    skip: offset,
-  });
-}
-
-/**
- * Single review by id
- */
-export async function getReviewById(id: string): Promise<Review | null> {
-  return prisma.review.findUnique({
-    where: { id },
-  });
-}
-
-/**
- * Get outlet by review id
- */
-export async function getOutletByReviewId(reviewId: string) {
-  const review = await prisma.review.findUnique({
-    where: { id: reviewId },
-    include: { outlet: true },
-  });
-  return review?.outlet || null;
-}
-
-/**
- * Create a review
- * (admin/manual import or GMB sync if later added)
- */
-export async function createReview(data: {
-  outletId: string;
-  rating: number;
-  customerName: string;
-  reviewText: string;
-}): Promise<Review> {
-  return prisma.review.create({
-    data: {
-      outletId: data.outletId,
-      rating: data.rating,
-      customerName: data.customerName,
-      reviewText: data.reviewText,
-    },
-  });
-}
-
-/**
- * Update review fields
- */
-export async function updateReview(
-  id: string,
-  data: Partial<Review>
-): Promise<Review> {
-  return prisma.review.update({
-    where: { id },
-    data: {
-      ...data,
-      updatedAt: new Date(),
-    },
-  });
-}
-
-/**
- * Update review status only
- */
-export async function updateReviewStatus(
-  id: string,
-  status: ReviewStatus
-): Promise<Review> {
-  return prisma.review.update({
-    where: { id },
-    data: {
-      status,
-      updatedAt: new Date(),
-    },
-  });
-}
-
-/**
- * Get escalated (low-rated) reviews only
- */
-export async function getEscalatedReviews(
-  limit = 100
-): Promise<Review[]> {
-  return prisma.review.findMany({
-    where: {
-      status: 'ESCALATED',
-      rating: { lte: 3 },
-    },
-    include: {
-      outlet: true,
-    },
-    orderBy: { createdAt: 'desc' },
-    take: limit,
-  });
-}
-
-/**
- * High-rated pending reviews
- */
-export async function getHighRatedReviews(
-  limit = 100
-): Promise<Review[]> {
-  return prisma.review.findMany({
-    where: {
-      status: 'PENDING',
-      rating: { gte: 4 },
-    },
-    include: {
-      outlet: true,
-    },
-    orderBy: { createdAt: 'desc' },
-    take: limit,
-  });
-}
-
-/**
- * Analytics used in admin dashboard
- */
-export async function getReviewAnalytics(
-  outletId: string,
-  days = 30
-) {
-  const start = new Date();
-  start.setDate(start.getDate() - days);
-
-  const reviews = await prisma.review.findMany({
-    where: {
-      outletId,
-      createdAt: { gte: start },
-    },
-  });
-
-  const total = reviews.length;
-
-  const avgRating =
-    total > 0
-      ? reviews.reduce((sum, r) => sum + r.rating, 0) / total
-      : 0;
-
-  const closed = reviews.filter(r => r.status === 'CLOSED').length;
-  const escalated = reviews.filter(r => r.status === 'ESCALATED').length;
-  const pending = reviews.filter(r => r.status === 'PENDING').length;
-
-  const ratingDistribution = {
-    five: reviews.filter(r => r.rating === 5).length,
-    four: reviews.filter(r => r.rating === 4).length,
-    three: reviews.filter(r => r.rating === 3).length,
-    two: reviews.filter(r => r.rating === 2).length,
-    one: reviews.filter(r => r.rating === 1).length,
-  };
-
-  return {
-    total,
-    avgRating: Number(avgRating.toFixed(2)),
-    closed,
-    escalated,
-    pending,
-    ratingDistribution,
-    periodDays: days,
-  };
-}
-
-/**
- * Delete review permanently
- */
-export async function deleteReview(id: string): Promise<Review> {
-  return prisma.review.delete({
-    where: { id },
-  });
-}
-
-// Export repository object with all methods
-export const reviewsRepository = {
-  getAllReviews,
-  getReviewsByOutlet,
-  getReviewById,
-  createReview,
-  updateReview,
-  updateReviewStatus,
-  getEscalatedReviews,
-  getHighRatedReviews,
-  getReviewAnalytics,
-  deleteReview,
-};
+export const reviewsRepository = new ReviewsRepository();

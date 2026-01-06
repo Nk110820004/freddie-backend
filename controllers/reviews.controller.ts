@@ -72,6 +72,11 @@ export class ReviewsController {
         reviewText,
       })
 
+      if (rating <= 3) {
+        const manualQueueRepo = new ManualReviewQueueRepository(prisma)
+        await manualQueueRepo.addToQueue(review.id, outletId)
+      }
+
       res.status(201).json({
         message: "Review created successfully",
         review,

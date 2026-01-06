@@ -1,4 +1,4 @@
-import { PrismaClient, type Payment, type PaymentStatus, type BillingPlan } from "@prisma/client"
+import { PrismaClient, type Payment, type PaymentStatus, type SubscriptionPlan } from "@prisma/client"
 
 const prisma = new PrismaClient()
 
@@ -7,7 +7,7 @@ export class PaymentRepository {
     razorpayOrderId: string
     amount: number
     currency?: string
-    planType: BillingPlan
+    planType: SubscriptionPlan
     userId: string
     outletId: string
   }): Promise<Payment> {
