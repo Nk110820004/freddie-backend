@@ -46,6 +46,10 @@ enum SubscriptionStatus {
   PAST_DUE
   CANCELED
   INACTIVE
+  EXPIRED
+  UNPAID
+  PAID
+  PARTIAL
 }
 
 enum ApiStatus {
@@ -63,6 +67,8 @@ enum ReviewStatus {
   AUTO_REPLIED
   MANUAL_PENDING
   CLOSED
+  ESCALATED
+  COMPLETED
 }
 
 enum ManualQueueStatus {
@@ -185,6 +191,7 @@ model Review {
 
   auditLogs         AuditLog[]
   manualQueue       ManualReviewQueue?
+  reviewWorkflow    ReviewWorkflow?
 
   @@index([outletId])
   @@index([status])
@@ -360,7 +367,7 @@ model ReviewWorkflow {
   reviewId        String      @id
   review          Review      @relation(fields: [reviewId], references: [id], onDelete: Cascade)
 
-  currentState    String
+  currentState    ReviewStatus
   reminderCount   Int         @default(0)
 
   lastActionAt    DateTime    @default(now())

@@ -1,7 +1,7 @@
 import type { Response, NextFunction } from "express"
 import type { AuthRequest } from "./auth.middleware"
-import { prisma } from "../lib/prisma"
-import { ApiStatus, BillingStatus, SubscriptionStatus, OnboardingStatus } from "@prisma/client"
+import { prisma } from "../database"
+import { ApiStatus, SubscriptionStatus, OnboardingStatus } from "@prisma/client"
 import { logger } from "../utils/logger"
 
 /**
@@ -20,7 +20,11 @@ export async function checkOutletCompliance(req: AuthRequest, res: Response, nex
       where: { id: outletId },
       select: {
         apiStatus: true,
-        billingStatus: true,
+        billing: {
+          select: {
+            status: true,
+          },
+        },
         subscriptionStatus: true,
         onboardingStatus: true,
       },
@@ -47,7 +51,7 @@ export async function checkOutletCompliance(req: AuthRequest, res: Response, nex
       return
     }
 
-    if (outlet.billingStatus !== BillingStatus.ACTIVE) {
+    if (outlet.billing?.status !== SubscriptionStatus.ACTIVE) {
       res.status(403).json({
         error: "Billing is SUSPENDED",
         message: "Billing status prevents API access.",
@@ -124,7 +128,7 @@ export async function validateSubscriptionUpdate(req: AuthRequest, res: Response
       return
     }
 
-    if (billingStatus && billingStatus !== BillingStatus.ACTIVE) {
+    if (billingStatus && billingStatus !== SubscriptionStatus.ACTIVE) {
       res.status(400).json({
         error: "Invalid API enablement",
         message: "API can only be enabled when billing is ACTIVE",
@@ -163,7 +167,11 @@ export async function enforceAutomationEligibility(req: AuthRequest, res: Respon
       where: { id: outletId },
       select: {
         apiStatus: true,
-        billingStatus: true,
+        billing: {
+          select: {
+            status: true,
+          },
+        },
         subscriptionStatus: true,
       },
     })
@@ -173,12 +181,19 @@ export async function enforceAutomationEligibility(req: AuthRequest, res: Respon
       return
     }
 
+    const normalizedSubscriptionStatus =
+      outlet.subscriptionStatus === SubscriptionStatus.PAST_DUE
+        ? SubscriptionStatus.PARTIAL
+        : outlet.subscriptionStatus
+
     const isEligible =
       outlet.apiStatus === ApiStatus.ENABLED &&
-      outlet.billingStatus === BillingStatus.ACTIVE &&
-      [SubscriptionStatus.PAID, SubscriptionStatus.PARTIAL, SubscriptionStatus.TRIAL].includes(
-        outlet.subscriptionStatus,
-      )
+      [
+        SubscriptionStatus.PAID,
+        SubscriptionStatus.PARTIAL,
+        SubscriptionStatus.TRIAL,
+        SubscriptionStatus.ACTIVE,
+      ].includes(normalizedSubscriptionStatus as any)
 
     if (!isEligible) {
       res.status(403).json({

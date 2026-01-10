@@ -1,4 +1,4 @@
-import { db } from '../database';
+import { prisma } from '../database';
 
 export enum ReviewWorkflowState {
   PENDING = 'PENDING',
@@ -13,7 +13,7 @@ export class ReviewWorkflowRepository {
    * Fetch by reviewId
    */
   async getByReviewId(reviewId: string) {
-    return db.reviewWorkflow.findUnique({
+    return prisma.reviewWorkflow.findUnique({
       where: { reviewId }
     });
   }
@@ -26,7 +26,7 @@ export class ReviewWorkflowRepository {
     const existing = await this.getByReviewId(reviewId);
     if (existing) return existing;
 
-    return db.reviewWorkflow.create({
+    return prisma.reviewWorkflow.create({
       data: {
         reviewId,
         currentState: ReviewWorkflowState.PENDING,
@@ -58,10 +58,12 @@ export class ReviewWorkflowRepository {
       [ReviewWorkflowState.ESCALATED]: [
         ReviewWorkflowState.COMPLETED
       ],
-      [ReviewWorkflowState.COMPLETED]: [] // terminal state
+      [ReviewWorkflowState.COMPLETED]: [
+        ReviewWorkflowState.MANUAL_PENDING // Re-open if needed
+      ]
     };
 
-    if (!allowed[from].includes(to)) {
+    if (!allowed[from] || !allowed[from].includes(to)) {
       throw new Error(`Illegal workflow transition from ${from} to ${to}`);
     }
   }
@@ -69,33 +71,34 @@ export class ReviewWorkflowRepository {
   /**
    * Generic state update with validation and audit timestamps
    */
-  async updateState(reviewId: string, nextState: ReviewWorkflowState) {
-    return db.$transaction(async (tx) => {
-      const current = await tx.reviewWorkflow.findUnique({
-        where: { reviewId }
-      });
+  async updateState(reviewId: string, nextState: ReviewWorkflowState, tx?: any) {
+    const client = tx || prisma;
+    
+    const current = await client.reviewWorkflow.findUnique({
+      where: { reviewId }
+    });
 
-      if (!current) {
-        throw new Error(`Workflow not found for reviewId=${reviewId}`);
+    if (!current) {
+      throw new Error(`Workflow not found for reviewId=${reviewId}`);
+    }
+
+    this.assertValidTransition(current.currentState as ReviewWorkflowState, nextState);
+
+    return client.reviewWorkflow.update({
+      where: { reviewId },
+      data: {
+        currentState: nextState,
+        lastActionAt: new Date()
       }
-
-      this.assertValidTransition(current.currentState as ReviewWorkflowState, nextState);
-
-      return tx.reviewWorkflow.update({
-        where: { reviewId },
-        data: {
-          currentState: nextState,
-          lastActionAt: new Date()
-        }
-      });
     });
   }
 
   /**
    * Mark review as requiring manual processing
    */
-  async moveToManualQueue(reviewId: string, firstReminderAt: Date) {
-    return db.reviewWorkflow.update({
+  async moveToManualQueue(reviewId: string, firstReminderAt: Date, tx?: any) {
+    const client = tx || prisma;
+    return client.reviewWorkflow.update({
       where: { reviewId },
       data: {
         currentState: ReviewWorkflowState.MANUAL_PENDING,
@@ -125,7 +128,7 @@ export class ReviewWorkflowRepository {
    * Reminder increment + scheduling
    */
   async incrementReminder(reviewId: string, nextReminderAt: Date) {
-    return db.reviewWorkflow.update({
+    return prisma.reviewWorkflow.update({
       where: { reviewId },
       data: {
         reminderCount: {
@@ -145,7 +148,7 @@ export class ReviewWorkflowRepository {
    * - reminderCount < 5
    */
   async getPendingReminders() {
-    return db.reviewWorkflow.findMany({
+    return prisma.reviewWorkflow.findMany({
       where: {
         currentState: ReviewWorkflowState.MANUAL_PENDING,
         nextReminderAt: {
@@ -176,7 +179,7 @@ export class ReviewWorkflowRepository {
    * Reset/remediate when manual reply is posted
    */
   async resolveManually(reviewId: string) {
-    return db.reviewWorkflow.update({
+    return prisma.reviewWorkflow.update({
       where: { reviewId },
       data: {
         currentState: ReviewWorkflowState.COMPLETED,

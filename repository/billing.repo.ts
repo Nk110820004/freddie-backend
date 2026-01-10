@@ -1,4 +1,4 @@
-import { prisma } from "./base.repo"
+import { prisma } from "../database"
 import type { Billing, SubscriptionStatus } from "@prisma/client"
 
 export class BillingRepository {

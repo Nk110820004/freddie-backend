@@ -1,3 +1,9 @@
-import { db } from '../database';
+import { type PrismaClient } from '@prisma/client';
 
-export const prisma = db;
+export abstract class BaseRepository {
+  protected prisma: PrismaClient;
+
+  constructor(prisma: PrismaClient) {
+    this.prisma = prisma;
+  }
+}

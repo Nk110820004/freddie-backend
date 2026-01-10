@@ -1,7 +1,8 @@
 import { ReviewStatus } from "@prisma/client";
 import { reviewsRepository } from "../repository/reviews.repo";
-import { OutletRepository } from "../repository/outlet.repo";
+import { outletsRepository } from "../repository/outlets.repo";
 import { ManualReviewQueueRepository } from "../repository/manual-review-queue.repo";
+import { reviewWorkflowRepository, ReviewWorkflowState } from "../repository/review-workflow.repo";
 import { openaiService } from "../integrations/openai";
 import { whatsappService } from "../integrations/whatsapp";
 import { gmbService } from "../integrations/gmb";
@@ -13,7 +14,7 @@ const INTERVAL_MINUTES = 15;
 let intervalHandle: NodeJS.Timeout | null = null;
 let lastFetchTime: Date | null = null;
 
-const outletRepo = new OutletRepository(prisma);
+const outletRepo = outletsRepository;
 const manualQueueRepo = new ManualReviewQueueRepository(prisma);
 
 //
@@ -40,11 +41,33 @@ async function processBatch() {
 //
 
 async function fetchAndProcessGMBReviews() {
-  const outlets = await outletRepo.getEligibleOutlets();
+  const allOutlets = await prisma.outlet.findMany({
+    where: {
+      apiStatus: "ENABLED",
+      onboardingStatus: "COMPLETED",
+    },
+    include: {
+      user: {
+        select: {
+          googleRefreshToken: true,
+          whatsappNumber: true,
+        },
+      },
+    },
+  });
 
-  logger.info(`Automation: ${outlets.length} eligible outlets found`);
+  // CRITICAL: Filter by strict eligibility criteria before polling
+  const eligibleOutlets = allOutlets.filter((outlet: any) => {
+    if (outlet.subscriptionStatus !== "ACTIVE") {
+      logger.warn(`Outlet ${outlet.id} subscription not active`);
+      return false;
+    }
+    return true;
+  });
 
-  for (const outlet of outlets) {
+  logger.info(`Automation: ${eligibleOutlets.length}/${allOutlets.length} outlets eligible for polling`);
+
+  for (const outlet of eligibleOutlets) {
     try {
       if (!outlet.user?.googleRefreshToken || !outlet.googleLocationName) {
         logger.warn(`Outlet ${outlet.id} missing GMB auth setup`);
@@ -56,7 +79,10 @@ async function fetchAndProcessGMBReviews() {
         lastFetchTime ?? undefined
       );
 
-      if (!newReviews?.length) continue;
+      if (!newReviews?.length) {
+        logger.debug(`No new reviews for outlet ${outlet.id}`);
+        continue;
+      }
 
       logger.info(
         `Fetched ${newReviews.length} new reviews for outlet ${outlet.id}`
@@ -88,26 +114,31 @@ async function processSingleReview(gmbReview: any, outlet: any) {
     return;
   }
 
-  const review = await reviewsRepository.createReview({
-    outletId: outlet.id,
-    rating,
-    customerName: gmbReview.reviewer.displayName,
-    reviewText: gmbReview.comment ?? "",
-    googleReviewId: gmbReview.reviewId
-  });
+  await prisma.$transaction(async (tx) => {
+    const review = await reviewsRepository.createReview({
+      outletId: outlet.id,
+      rating,
+      customerName: gmbReview.reviewer.displayName,
+      reviewText: gmbReview.comment ?? "",
+      googleReviewId: gmbReview.reviewId
+    });
 
-  if (rating >= 4) {
-    await handlePositiveReview(review, outlet);
-  } else {
-    await handleCriticalReview(review, outlet);
-  }
+    // Initialize workflow
+    await reviewWorkflowRepository.createIfNotExists(review.id);
+
+    if (rating >= 4) {
+      await handlePositiveReview(review, outlet, tx);
+    } else {
+      await handleCriticalReview(review, outlet, tx);
+    }
+  });
 }
 
 //
 // -------------- STEP 2: POSITIVE REVIEWS (AUTO) ----------------
 //
 
-async function handlePositiveReview(review: any, outlet: any) {
+async function handlePositiveReview(review: any, outlet: any, tx?: any) {
   try {
     logger.info(`Auto-handling positive review ${review.id}`);
 
@@ -123,6 +154,7 @@ async function handlePositiveReview(review: any, outlet: any) {
     }
 
     await reviewsRepository.markAsAutoReplied(review.id, aiReply);
+    await reviewWorkflowRepository.updateState(review.id, ReviewWorkflowState.AUTO_REPLIED, tx);
 
     const posted = await gmbService.postReply(
       outlet.googleLocationName,
@@ -137,6 +169,7 @@ async function handlePositiveReview(review: any, outlet: any) {
     }
 
     await reviewsRepository.markAsClosed(review.id);
+    await reviewWorkflowRepository.complete(review.id);
 
     if (outlet.user?.whatsappNumber) {
       await whatsappService.sendText(
@@ -160,11 +193,15 @@ Reply sent:
 // -------------- STEP 3: CRITICAL REVIEWS (MANUAL) ----------------
 //
 
-async function handleCriticalReview(review: any, outlet: any) {
+async function handleCriticalReview(review: any, outlet: any, tx?: any) {
   try {
     logger.info(`Queuing critical review ${review.id}`);
 
     await manualQueueRepo.addToQueue(review.id, outlet.id);
+    
+    // Calculate first reminder (15 mins from now)
+    const firstReminder = new Date(Date.now() + 15 * 60 * 1000);
+    await reviewWorkflowRepository.moveToManualQueue(review.id, firstReminder, tx);
 
     if (outlet.user?.whatsappNumber) {
       await whatsappService.sendText(
@@ -197,22 +234,46 @@ async function processManualReviewReminders() {
   logger.info(`Sending ${due.length} manual-review reminders`);
 
   for (const item of due) {
-    const targetUser = item.assignedAdmin ?? item.review.outlet.user;
+    try {
+      const wf = await reviewWorkflowRepository.getByReviewId(item.reviewId);
+      if (!wf) {
+        logger.warn(`Workflow not found for review ${item.reviewId}`);
+        continue;
+      }
 
-    if (!targetUser?.whatsappNumber) continue;
+      if (wf.currentState === ReviewWorkflowState.ESCALATED || wf.currentState === ReviewWorkflowState.COMPLETED) {
+        logger.debug(`Review ${item.reviewId} already in final state ${wf.currentState}`);
+        continue;
+      }
 
-    await whatsappService.sendText(
-      targetUser.whatsappNumber,
-      `⏰ *Reminder: manual review pending*
+      const targetUser = item.assignedAdmin ?? item.review.outlet.user;
 
-Outlet: ${item.review.outlet.name}
-Customer: ${item.review.customerName}
-Rating: ${item.review.rating}⭐
+      if (!targetUser?.whatsappNumber) {
+        logger.warn(`No WhatsApp number for outlet ${item.review.outletId}`);
+        const updated = await manualQueueRepo.updateReminderSent(item.id);
+        if (updated.status === "ESCALATED") {
+          await reviewWorkflowRepository.updateState(item.reviewId, ReviewWorkflowState.ESCALATED);
+          logger.info(`Review ${item.reviewId} escalated (no WhatsApp channel)`);
+        }
+        continue;
+      }
 
-Please reply to close this review.`
-    );
+      await whatsappService.sendText(
+        targetUser.whatsappNumber,
+        `⏰ *Reminder: manual review pending*\n\nOutlet: ${item.review.outlet.name}\nCustomer: ${item.review.customerName}\nRating: ${item.review.rating}⭐\nReminder #${item.reminderCount + 1}\n\nPlease respond to close this review.`
+      );
 
-    await manualQueueRepo.markReminderSent(item.id);
+      const updated = await manualQueueRepo.updateReminderSent(item.id);
+
+      if (updated.status === "ESCALATED") {
+        await reviewWorkflowRepository.updateState(item.reviewId, ReviewWorkflowState.ESCALATED);
+        logger.info(`Review ${item.reviewId} escalated after max reminders`);
+      } else if (updated.nextReminderAt) {
+        await reviewWorkflowRepository.incrementReminder(item.reviewId, updated.nextReminderAt);
+      }
+    } catch (err) {
+      logger.error(`Failed to process reminder for item ${item.id}`, err);
+    }
   }
 }
 
@@ -247,3 +308,4 @@ export async function stopAutomation() {
     logger.info("Automation worker stopped");
   }
 }
+// -------------- START / STOP ----------------

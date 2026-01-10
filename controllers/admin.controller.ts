@@ -4,11 +4,12 @@ import { logger } from "../utils/logger"
 import bcryptjs from "bcryptjs"
 import type { AuthRequest } from "../middleware/auth.middleware"
 import crypto from "crypto"
-import { OutletRepository } from "../repository/outlet.repo"
+import { outletsRepository } from "../repository/outlets.repo"
 import { ManualReviewQueueRepository } from "../repository/manual-review-queue.repo"
-import { prisma } from "../lib/prisma" // assuming prisma client is here
+import { prisma } from "../database" // assuming prisma client is here
+import { billingRepository } from "../repository/billing.repo"
 
-const outletRepo = new OutletRepository(prisma)
+const outletRepo = outletsRepository
 const manualQueueRepo = new ManualReviewQueueRepository(prisma)
 
 export class AdminController {
@@ -185,7 +186,6 @@ export class AdminController {
         passwordHash,
         role: "USER",
         phoneNumber: whatsappNumber,
-        whatsappNumber, // specifically for alerts
       })
 
       // 2. Create Outlet via new repository with rules
@@ -261,7 +261,6 @@ export class AdminController {
         passwordHash,
         role: "USER",
         phoneNumber: whatsappNumber,
-        whatsappNumber,
       })
 
       // Create outlet with business rule enforcement
@@ -317,7 +316,7 @@ export class AdminController {
       const { outletId } = req.params
       const { subscriptionStatus, billingStatus, apiStatus, remarks } = req.body
 
-      if (!req.user?.id) {
+      if (!req.userId) {
         res.status(401).json({ error: "Unauthorized" })
         return
       }
@@ -338,14 +337,16 @@ export class AdminController {
       }
 
       // Update with business rule enforcement and audit trail
-      const updated = await outletRepo.updateOutletSubscription(outletId, req.user.id, {
+      const updated = await outletRepo.update(outletId, {
         subscriptionStatus,
-        billingStatus,
         apiStatus,
-        remarks,
       })
 
-      logger.info(`Subscription updated for outlet ${outletId} by admin ${req.user.id}`)
+      if (billingStatus) {
+        await billingRepository.updateSubscriptionStatus(outletId, billingStatus)
+      }
+
+      logger.info(`Subscription updated for outlet ${outletId} by admin ${req.userId}`)
 
       res.status(200).json({
         message: "Subscription updated successfully",
@@ -353,7 +354,6 @@ export class AdminController {
           id: updated.id,
           name: updated.name,
           subscriptionStatus: updated.subscriptionStatus,
-          billingStatus: updated.billingStatus,
           apiStatus: updated.apiStatus,
         },
       })
@@ -469,7 +469,7 @@ export class AdminController {
 
       // Post to GMB if credentials available
       if (review.outlet.user.googleRefreshToken && review.outlet.googleLocationName && review.googleReviewId) {
-        const { gmbService } = await import("../integrations/gmb")
+        const { gmbService } = await import("../integrations/gmb.js")
         await gmbService.postReply(
           review.outlet.googleLocationName,
           review.googleReviewId,
@@ -478,7 +478,7 @@ export class AdminController {
         )
       }
 
-      logger.info(`Manual reply submitted for review ${reviewId} by admin ${req.user?.id}`)
+      logger.info(`Manual reply submitted for review ${reviewId} by admin ${req.userId}`)
 
       res.status(200).json({
         message: "Manual reply submitted successfully",

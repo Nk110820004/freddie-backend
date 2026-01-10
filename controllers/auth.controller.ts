@@ -18,6 +18,8 @@ import {
   signAccessToken
 } from "../utils/token.util";
 
+import { AuthRequest } from "../middleware/auth.middleware";
+
 import { SubscriptionStatus } from "@prisma/client";
 
 const RegisterSchema = z.object({
@@ -26,6 +28,17 @@ const RegisterSchema = z.object({
   password: z.string().min(8),
   outletName: z.string().min(1)
 });
+
+export type LoginRequest = {
+  email: string;
+  password: string;
+};
+
+export type TwoFAVerifyRequest = {
+  email: string;
+  token: string;
+  tempToken: string;
+};
 
 export class AuthController {
   private readonly JWT_SECRET =
@@ -70,16 +83,9 @@ export class AuthController {
         role: "USER"
       });
 
-      // create outlet in PENDING onboarding & TRIAL subscription
-      const outlet = await outletRepository.createOutlet({
-        name: outletName,
-        userId: user.id,
-        primaryContactName: name,
-        contactEmail: email.toLowerCase(),
-        contactPhone: "N/A",
-        category: "OTHER",
-        subscriptionPlan: "MONTHLY"
-      });
+      // CRITICAL FIX: Outlet creation is ADMIN-ONLY
+      // Users register without outlets. Admins must explicitly create and onboard outlets.
+      // Do NOT auto-create outlets during registration.
 
       await auditRepository.createAuditLog({
         action: "USER_REGISTER",
@@ -104,8 +110,7 @@ export class AuthController {
           email: user.email,
           role: user.role
         },
-        outlet,
-        message: "Registration successful – onboarding pending"
+        message: "Registration successful – admin must create outlet"
       });
     } catch (err) {
       logger.error("register failed", err);
@@ -139,7 +144,7 @@ export class AuthController {
 
       // requires 2FA -> issue temp token
       if (user.twoFactorEnabled && user.twoFactorVerified) {
-        const tempToken = jwt.sign(
+        const tempToken = (jwt.sign as any)(
           {
             u: user.id,
             requiresTwoFA: true
@@ -293,7 +298,7 @@ export class AuthController {
     return {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite: (process.env.COOKIE_SAME_SITE as 'lax' | 'strict' | 'none') || 'lax',
       maxAge: this.parseExpiryToMs(this.JWT_EXPIRY)
     };
   }
@@ -302,7 +307,7 @@ export class AuthController {
     return {
       httpOnly: true,
       secure: process.env.NODE_ENV === "production",
-      sameSite: "lax",
+      sameSite: (process.env.COOKIE_SAME_SITE as 'lax' | 'strict' | 'none') || 'lax',
       maxAge: this.parseExpiryToMs(this.REFRESH_EXPIRES)
     };
   }
@@ -311,6 +316,23 @@ export class AuthController {
     if (v.endsWith("d")) return parseInt(v) * 86400000;
     if (v.endsWith("h")) return parseInt(v) * 3600000;
     return parseInt(v) * 1000;
+  }
+
+  async getCurrentUser(req: AuthRequest, res: Response) {
+    try {
+      const user = await usersRepository.getById(req.userId!);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      res.json(user);
+    } catch (err: any) {
+      logger.error("getCurrentUser failed", err);
+      res.status(500).json({ error: "Failed to get user" });
+    }
+  }
+
+  static validatePasswordStrength(password: string) {
+    // Simple validation
+    if (password.length < 8) return false;
+    return true;
   }
 }
 

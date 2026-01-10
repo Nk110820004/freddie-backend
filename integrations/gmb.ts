@@ -19,6 +19,10 @@ export interface GMBReview {
   }
 }
 
+// Retry configuration with exponential backoff
+const MAX_RETRIES = 3;
+const INITIAL_RETRY_DELAY_MS = 1000;
+
 export class GoogleMyBusinessService {
   private oauth2Client = new google.auth.OAuth2(env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.GOOGLE_REDIRECT_URI)
 
@@ -27,6 +31,30 @@ export class GoogleMyBusinessService {
       this.oauth2Client.setCredentials({
         refresh_token: env.GOOGLE_REFRESH_TOKEN,
       })
+    }
+  }
+
+  /**
+   * Refresh OAuth token with retry logic
+   */
+  private async refreshAccessToken(attempt: number = 0): Promise<boolean> {
+    try {
+      logger.debug(`Refreshing Google access token (attempt ${attempt + 1})`);
+      const { credentials } = await this.oauth2Client.refreshAccessToken();
+      this.oauth2Client.setCredentials(credentials);
+      logger.info("Google access token refreshed successfully");
+      return true;
+    } catch (error) {
+      logger.error(`Failed to refresh access token (attempt ${attempt + 1})`, error);
+      
+      if (attempt < MAX_RETRIES) {
+        const delayMs = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
+        logger.info(`Retrying token refresh in ${delayMs}ms...`);
+        await new Promise(resolve => setTimeout(resolve, delayMs));
+        return this.refreshAccessToken(attempt + 1);
+      }
+      
+      return false;
     }
   }
 
@@ -61,7 +89,7 @@ export class GoogleMyBusinessService {
   }
 
   /**
-   * Fetch reviews from a GMB location
+   * Fetch reviews from a GMB location with retry and pagination
    * Returns reviews from last 15 minutes if lastFetchTime provided
    */
   async fetchReviews(locationName: string, lastFetchTime?: Date): Promise<GMBReview[] | null> {
@@ -71,26 +99,61 @@ export class GoogleMyBusinessService {
         return null
       }
 
-      const mybusinessaccountmanagement = google.mybusinessaccountmanagement("v1")
-      const mybusiness = google.mybusinessbusinessinformation("v1")
+      // Ensure token is fresh before fetching
+      const tokenRefreshed = await this.refreshAccessToken();
+      if (!tokenRefreshed) {
+        logger.error("Could not refresh access token for GMB API");
+        return null;
+      }
 
-      const response = await mybusiness.locations.reviews.list({
-        auth: this.oauth2Client,
-        parent: locationName,
-        pageSize: 50,
-      } as any)
+      const mybusiness = (google as any).mybusiness?.("v4") as any
 
-      let reviews: any[] = response.data.reviews || []
+      let allReviews: any[] = [];
+      let pageToken: string | undefined = undefined;
+      let pageCount = 0;
+      const MAX_PAGES = 5; // Limit pagination to prevent excessive API calls
+
+      // Paginate through all reviews
+      do {
+        try {
+          const response: any = await mybusiness.locations.reviews.list({
+            auth: this.oauth2Client,
+            parent: locationName,
+            pageSize: 50,
+            pageToken,
+          } as any)
+
+          const reviews = response.data.reviews || [];
+          allReviews = allReviews.concat(reviews);
+          
+          pageToken = response.data.nextPageToken;
+          pageCount++;
+
+          logger.debug(`Fetched page ${pageCount} with ${reviews.length} reviews`);
+
+          if (pageCount >= MAX_PAGES && pageToken) {
+            logger.warn(`Pagination limit reached (${MAX_PAGES} pages) - stopping fetch`);
+            break;
+          }
+        } catch (pageError: any) {
+          logger.error(`Error fetching page ${pageCount + 1}`, pageError);
+          if (pageError.status === 401) {
+            logger.warn("Token expired, refresh failed");
+            return null;
+          }
+          break; // Stop pagination on error
+        }
+      } while (pageToken);
 
       // Filter by time if provided (last 15 minutes)
       if (lastFetchTime) {
-        reviews = reviews.filter((review) => {
+        allReviews = allReviews.filter((review) => {
           const reviewTime = new Date(review.updateTime || review.createTime)
           return reviewTime > lastFetchTime
         })
       }
 
-      const mapped: GMBReview[] = reviews.map((r) => ({
+      const mapped: GMBReview[] = allReviews.map((r) => ({
         reviewId: r.name?.split("/").pop() || "",
         reviewer: {
           displayName: r.reviewer?.displayName || "Anonymous",
@@ -104,14 +167,25 @@ export class GoogleMyBusinessService {
         reviewReply: r.reviewReply,
       }))
 
-      logger.info(`Fetched ${mapped.length} reviews from GMB`, {
+      logger.info(`Fetched ${mapped.length} reviews from GMB (${pageCount} pages)`, {
         locationName,
         filtered: lastFetchTime ? "yes" : "no",
       })
 
       return mapped
-    } catch (error) {
-      logger.error("Failed to fetch GMB reviews", error)
+    } catch (error: any) {
+      // Map Google API errors to actionable messages
+      if (error.status === 401) {
+        logger.error("GMB: Unauthorized - refresh token may be invalid", error.message);
+      } else if (error.status === 403) {
+        logger.error("GMB: Forbidden - check permissions", error.message);
+      } else if (error.status === 429) {
+        logger.error("GMB: Rate limited - backing off", error.message);
+      } else if (error.status === 503) {
+        logger.error("GMB: Service unavailable - will retry next cycle", error.message);
+      } else {
+        logger.error("Failed to fetch GMB reviews", error)
+      }
       return null
     }
   }
@@ -138,7 +212,7 @@ export class GoogleMyBusinessService {
         refresh_token: refreshToken,
       })
 
-      const mybusiness = google.mybusinessbusinessinformation("v1")
+      const mybusiness = (google as any).mybusiness?.("v4") as any
 
       await mybusiness.locations.reviews.updateReply({
         auth: oauth2Client,

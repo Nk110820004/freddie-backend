@@ -1,5 +1,5 @@
 import type { Request, Response } from "express"
-import { db } from "../database"
+import { prisma } from "../database"
 import { logger } from "../utils/logger"
 import { auditRepository } from "../repository/audit.repo"
 
@@ -11,27 +11,27 @@ export class DashboardController {
     try {
       // parallel queries improve speed
       const [adminCount, activeOutlets, escalatedReviews, aiReplies, avgRating, apiKeyOutlets] = await Promise.all([
-        db.user.count({
+        prisma.user.count({
           where: { deletedAt: null },
         }),
 
-        db.outlet.count({
+        prisma.outlet.count({
           where: { status: "ACTIVE" },
         }),
 
-        db.review.count({
+        prisma.review.count({
           where: { status: "ESCALATED" },
         }),
 
-        db.review.count({
+        prisma.review.count({
           where: { status: "CLOSED" },
         }),
 
-        db.review.aggregate({
+        prisma.review.aggregate({
           _avg: { rating: true },
         }),
 
-        db.apiKey.count({
+        prisma.apiKey.count({
           where: { isActive: true },
         }),
       ])

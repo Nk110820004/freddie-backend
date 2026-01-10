@@ -1,4 +1,4 @@
-import { prisma } from "./base.repo";
+import { prisma } from "../database";
 import {
   Review,
   ReviewStatus,
@@ -178,6 +178,45 @@ export class ReviewsRepository {
 
   async delete(id: string): Promise<Review> {
     return prisma.review.delete({ where: { id } });
+  }
+
+  // Aliases for compatibility
+  async getAllReviews() {
+    return this.getAll();
+  }
+
+  async getReviewById(id: string) {
+    return this.getById(id);
+  }
+
+  async getReviewsByOutlet(outletId: string, limit = 50, offset = 0) {
+    return this.getByOutlet(outletId, limit, offset);
+  }
+
+  async updateReviewStatus(id: string, status: ReviewStatus) {
+    // Assuming we have a method to update status, but let's see
+    // For now, if status is CLOSED, call markAsClosed
+    if (status === ReviewStatus.CLOSED) {
+      return this.markAsClosed(id);
+    }
+    // Otherwise, perhaps update the review status
+    return prisma.review.update({
+      where: { id },
+      data: { status }
+    });
+  }
+
+  async getReviewAnalytics(outletId: string, days = 30) {
+    return this.getAnalytics(outletId, days);
+  }
+
+  async deleteReview(id: string) {
+    return this.delete(id);
+  }
+
+  async getOutletByReviewId(reviewId: string) {
+    const review = await this.getById(reviewId);
+    return review?.outlet || null;
   }
 }
 

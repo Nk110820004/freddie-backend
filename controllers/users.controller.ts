@@ -48,11 +48,23 @@ export class UsersController {
   //
   async getAll(req: Request, res: Response) {
     try {
-      const users = await usersRepository.getAllUsers();
+      const users = await usersRepository.getAll();
       res.json(users);
     } catch (err) {
       logger.error("getAll failed", err);
       res.status(500).json({ error: "Failed to fetch users" });
+    }
+  }
+
+  async getById(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const user = await usersRepository.getById(id);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      res.json(user);
+    } catch (err) {
+      logger.error("getById failed", err);
+      res.status(500).json({ error: "Failed to fetch user" });
     }
   }
 
@@ -112,6 +124,18 @@ export class UsersController {
     } catch (err) {
       logger.error("create user failed", err);
       res.status(500).json({ error: "Failed to create user" });
+    }
+  }
+
+  async update(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const data = req.body;
+      const updated = await usersRepository.updateUser(id, data);
+      res.json(updated);
+    } catch (err) {
+      logger.error("update user failed", err);
+      res.status(500).json({ error: "Failed to update user" });
     }
   }
 
@@ -193,6 +217,52 @@ export class UsersController {
     } catch (err) {
       logger.error("delete failed", err);
       res.status(500).json({ error: "Delete failed" });
+    }
+  }
+
+  async enrollTwoFA(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      // Placeholder
+      res.json({ message: "2FA enrolled" });
+    } catch (err) {
+      logger.error("enrollTwoFA failed", err);
+      res.status(500).json({ error: "Failed" });
+    }
+  }
+
+  async verifyTwoFAEnrollment(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      // Placeholder
+      res.json({ message: "2FA verified" });
+    } catch (err) {
+      logger.error("verifyTwoFAEnrollment failed", err);
+      res.status(500).json({ error: "Failed" });
+    }
+  }
+
+  async getProfile(req: Request, res: Response) {
+    try {
+      const userId = (req as any).userId;
+      const user = await usersRepository.getById(userId);
+      if (!user) return res.status(404).json({ error: "User not found" });
+      res.json(user);
+    } catch (err) {
+      logger.error("getProfile failed", err);
+      res.status(500).json({ error: "Failed" });
+    }
+  }
+
+  async updateProfile(req: Request, res: Response) {
+    try {
+      const userId = (req as any).userId;
+      const data = req.body;
+      const updated = await usersRepository.updateUser(userId, data);
+      res.json(updated);
+    } catch (err) {
+      logger.error("updateProfile failed", err);
+      res.status(500).json({ error: "Failed" });
     }
   }
 }

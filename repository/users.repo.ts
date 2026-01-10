@@ -1,4 +1,4 @@
-import { prisma } from "./base.repo";
+import { prisma } from "../database";
 import {
   User,
   UserRole
@@ -9,9 +9,11 @@ export class UsersRepository {
   // ----------- READ -----------
   //
 
-  async getAll(): Promise<User[]> {
+  async getAll(limit = 50, offset = 0): Promise<User[]> {
     return prisma.user.findMany({
       where: { deletedAt: null },
+      take: limit,
+      skip: offset,
       orderBy: { createdAt: "desc" }
     });
   }
@@ -220,6 +222,78 @@ export class UsersRepository {
       });
 
       return user;
+    });
+  }
+
+  // Compatibility aliases and helpers used by controllers (bridge from older API)
+
+  // Legacy API compatibility
+  async findByEmail(email: string) {
+    return this.getByEmail(email);
+  }
+
+  async create(data: {
+    name: string;
+    email: string;
+    passwordHash: string;
+    role?: UserRole;
+    phoneNumber?: string;
+    googleEmail?: string;
+  }) {
+    return this.createUser({
+      name: data.name,
+      email: data.email,
+      passwordHash: data.passwordHash,
+      role: data.role,
+      whatsappNumber: data.phoneNumber,
+      googleEmail: data.googleEmail
+    } as any);
+  }
+
+  async count() {
+    return prisma.user.count({ where: { deletedAt: null } });
+  }
+
+  async updateRole(id: string, role: UserRole) {
+    return this.updateUserRole(id, role);
+  }
+
+  async getUserById(id: string) {
+    return this.getById(id);
+  }
+
+  async getUserByEmail(email: string) {
+    return this.getByEmail(email);
+  }
+
+  async softDeleteUser(id: string) {
+    return this.softDelete(id);
+  }
+
+  async hardDeleteUser(id: string) {
+    return this.hardDelete(id);
+  }
+
+  async countSuperAdmins() {
+    return prisma.user.count({ where: { role: 'SUPER_ADMIN', deletedAt: null } });
+  }
+
+  async assignOutlets(userId: string, outletIds: string[]) {
+    return prisma.user.update({
+      where: { id: userId },
+      data: {
+        outlets: {
+          connect: outletIds.map((id) => ({ id })),
+        },
+        updatedAt: new Date(),
+      },
+    });
+  }
+
+  async delete(id: string) {
+    return prisma.user.update({
+      where: { id },
+      data: { deletedAt: new Date() },
     });
   }
 }

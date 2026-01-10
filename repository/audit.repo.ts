@@ -1,4 +1,4 @@
-import { prisma } from './base.repo';
+import { prisma } from '../database';
 import { AuditLog } from '@prisma/client';
 
 /**

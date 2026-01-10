@@ -28,6 +28,55 @@ export class WhatsAppService {
   private baseUrl = "https://graph.facebook.com/v18.0"
   private phoneNumberId = env.WHATSAPP_PHONE_NUMBER_ID
   private accessToken = env.WHATSAPP_ACCESS_TOKEN
+  private rateLimitMap: Map<string, number[]> = new Map() // Track message timestamps per number
+  private readonly MAX_MESSAGES_PER_HOUR = 100 // Rate limit per phone number
+
+  /**
+   * Check rate limit for a phone number
+   */
+  private checkRateLimit(phoneNumber: string): boolean {
+    const now = Date.now()
+    const oneHourAgo = now - (60 * 60 * 1000)
+    
+    let timestamps = this.rateLimitMap.get(phoneNumber) || []
+    timestamps = timestamps.filter(ts => ts > oneHourAgo)
+    
+    if (timestamps.length >= this.MAX_MESSAGES_PER_HOUR) {
+      logger.warn(`Rate limit exceeded for ${phoneNumber}: ${timestamps.length} messages in last hour`)
+      return false
+    }
+    
+    timestamps.push(now)
+    this.rateLimitMap.set(phoneNumber, timestamps)
+    return true
+  }
+
+  /**
+   * Validate phone number is 1:1 (not group)
+   * WhatsApp Business API only supports 1:1 messaging
+   * Group messaging is NOT supported and should be explicitly forbidden
+   */
+  private validatePhoneNumber(phoneNumber: string): boolean {
+    // Normalize: remove all non-digits
+    const normalized = phoneNumber.replace(/\D/g, "")
+    
+    // WhatsApp groups have special format (e.g., "123-456@g.us")
+    // Business API only allows individual numbers (e.g., "123456789@s.whatsapp.net")
+    // Our system should only store and use individual phone numbers
+    
+    if (phoneNumber.includes("@g.us")) {
+      logger.error(`Group messaging is NOT supported: ${phoneNumber}`)
+      return false
+    }
+    
+    // Basic validation: should be 7-15 digits (international standard)
+    if (normalized.length < 7 || normalized.length > 15) {
+      logger.warn(`Invalid phone number length: ${normalized.length}`)
+      return false
+    }
+    
+    return true
+  }
 
   /**
    * Send a WhatsApp message using template
@@ -37,6 +86,16 @@ export class WhatsAppService {
     try {
       if (!this.accessToken || !this.phoneNumberId) {
         logger.warn("WhatsApp credentials not configured")
+        return false
+      }
+
+      // CRITICAL: Validate this is not a group
+      if (!this.validatePhoneNumber(toNumber)) {
+        return false
+      }
+
+      // Check rate limit
+      if (!this.checkRateLimit(toNumber)) {
         return false
       }
 
@@ -83,11 +142,22 @@ export class WhatsAppService {
   /**
    * Send a text message (requires active 24-hour session window)
    * For notifications, use templates instead
+   * CRITICAL: This is 1:1 only - group messaging is explicitly forbidden
    */
   async sendText(toNumber: string, message: string): Promise<boolean> {
     try {
       if (!this.accessToken || !this.phoneNumberId) {
         logger.warn("WhatsApp credentials not configured")
+        return false
+      }
+
+      // CRITICAL: Validate this is not a group
+      if (!this.validatePhoneNumber(toNumber)) {
+        return false
+      }
+
+      // Check rate limit
+      if (!this.checkRateLimit(toNumber)) {
         return false
       }
 

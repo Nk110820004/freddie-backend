@@ -1,11 +1,10 @@
 import type { Request, Response } from "express"
 import { reviewsRepository } from "../repository/reviews.repo"
-import { getOutletByReviewId } from "../repository/reviews.repo"
 import { usersRepository } from "../repository/users.repo"
 import { gmbService } from "../integrations/gmb"
 import { auditRepository } from "../repository/audit.repo"
 import { logger } from "../utils/logger"
-import { prisma } from "../prisma"
+import { prisma } from "../database"
 import { ManualReviewQueueRepository } from "../repository/manual-review-queue.repo"
 
 export class ReviewsController {
@@ -134,17 +133,20 @@ export class ReviewsController {
       }
 
       // Check if user owns the outlet
-      const outlet = await getOutletByReviewId(id)
+      const outlet = await reviewsRepository.getOutletByReviewId(id)
       if (!outlet || outlet.userId !== userId) {
         res.status(403).json({ error: "Forbidden: You do not own this outlet" })
         return
       }
 
       // Update review
-      await reviewsRepository.updateReview(id, {
-        manualReplyText: manualReply,
-        status: "CLOSED",
-      } as any)
+      await prisma.review.update({
+        where: { id },
+        data: {
+          manualReplyText: manualReply,
+          status: "CLOSED",
+        }
+      })
 
       // Remove from manual queue if present
       const queueItem = await prisma.manualReviewQueue.findFirst({

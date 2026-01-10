@@ -147,4 +147,10 @@ export class ManualReviewQueueRepository extends BaseRepository {
       },
     })
   }
+
+  async deleteByOutlet(outletId: string) {
+    return this.prisma.manualReviewQueue.deleteMany({
+      where: { outletId }
+    })
+  }
 }

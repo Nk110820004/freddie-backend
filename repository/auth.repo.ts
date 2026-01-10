@@ -1,9 +1,9 @@
-import { db } from '../database';
+import { prisma } from '../database';
 import { User } from '@prisma/client';
 
 export class AuthRepository {
   async getUserByEmail(email: string): Promise<User | null> {
-    return db.user.findFirst({
+    return prisma.user.findFirst({
       where: {
         email: email.toLowerCase(),
         deletedAt: null,
@@ -12,7 +12,7 @@ export class AuthRepository {
   }
 
   async updateLastLogin(id: string, ip?: string): Promise<void> {
-    await db.user.update({
+    await prisma.user.update({
       where: { id },
       data: {
         lastLoginAt: new Date(),
@@ -22,7 +22,7 @@ export class AuthRepository {
   }
 
   async saveTwoFactorSecret(id: string, secret: string): Promise<void> {
-    await db.user.update({
+    await prisma.user.update({
       where: { id },
       data: {
         twoFactorSecret: secret,

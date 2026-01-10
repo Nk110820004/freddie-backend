@@ -59,10 +59,11 @@ export class UserController {
       const userId = (req as any).userId
       const validation = UserProfileSchema.safeParse(req.body)
       if (!validation.success) {
-        return res.status(400).json({
+        res.status(400).json({
           message: "Invalid input",
           errors: validation.error.formErrors.fieldErrors,
         })
+        return
       }
       const { whatsappNumber, gmbAccountId } = validation.data
 
@@ -266,10 +267,11 @@ export class UserController {
       const userId = (req as any).userId
       const validation = WhatsAppConnectSchema.safeParse(req.body)
       if (!validation.success) {
-        return res.status(400).json({
+        res.status(400).json({
           message: "Invalid input",
           errors: validation.error.formErrors.fieldErrors,
         })
+        return
       }
       const { phoneNumber } = validation.data
 

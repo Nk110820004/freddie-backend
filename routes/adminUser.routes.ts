@@ -1,5 +1,5 @@
 import { Router } from "express"
-import { createUser, getUsers, updateUser, deleteUser } from "../controllers/adminUser.controller"
+import { adminUserController } from "../controllers/adminUser.controller"
 import { requireAuth } from "../middleware/auth.middleware"
 import { requireAdmin, requireSuperAdmin } from "../middleware/rbac.middleware"
 
@@ -10,15 +10,15 @@ router.use(requireAuth)
 router.use(requireAdmin)
 
 // Create new admin user (SUPER_ADMIN only)
-router.post("/", requireSuperAdmin, createUser)
+router.post("/", requireSuperAdmin, (req, res) => adminUserController.create(req, res))
 
 // Get all users
-router.get("/", getUsers)
+router.get("/", (req, res) => adminUserController.getUsers(req, res))
 
 // Update user
-router.put("/:id", requireSuperAdmin, updateUser)
+router.put("/:id", requireSuperAdmin, (req, res) => adminUserController.updateUser(req, res))
 
 // Delete user (SUPER_ADMIN only)
-router.delete("/:id", requireSuperAdmin, deleteUser)
+router.delete("/:id", requireSuperAdmin, (req, res) => adminUserController.deleteUser(req, res))
 
 export default router

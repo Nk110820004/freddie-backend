@@ -78,6 +78,39 @@ export class AdminUserController {
       res.status(err.status || 500).json({ error: err.message || "Failed" });
     }
   }
+
+  async getUsers(req: Request, res: Response) {
+    try {
+      const users = await usersRepository.getAll();
+      res.json(users);
+    } catch (err: any) {
+      logger.error("Get users failed", err);
+      res.status(500).json({ error: "Failed to get users" });
+    }
+  }
+
+  async updateUser(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      const { name, email, role } = req.body;
+      const updated = await usersRepository.updateUser(id, { name, email, role });
+      res.json(updated);
+    } catch (err: any) {
+      logger.error("Update user failed", err);
+      res.status(500).json({ error: "Failed to update user" });
+    }
+  }
+
+  async deleteUser(req: Request, res: Response) {
+    try {
+      const { id } = req.params;
+      await usersRepository.delete(id);
+      res.json({ message: "User deleted" });
+    } catch (err: any) {
+      logger.error("Delete user failed", err);
+      res.status(500).json({ error: "Failed to delete user" });
+    }
+  }
 }
 
 export const adminUserController = new AdminUserController();

@@ -1,4 +1,4 @@
-import { prisma } from './base.repo';
+import { prisma } from '../database';
 import {
   Outlet,
   OutletStatus,
@@ -14,7 +14,8 @@ export class OutletRepository {
 
   async getAll(): Promise<Outlet[]> {
     return prisma.outlet.findMany({
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
+      include: { user: true }
     });
   }
 
@@ -27,7 +28,8 @@ export class OutletRepository {
 
   async getById(id: string): Promise<Outlet | null> {
     return prisma.outlet.findUnique({
-      where: { id }
+      where: { id },
+      include: { billing: true }
     });
   }
 
@@ -185,6 +187,27 @@ export class OutletRepository {
     return prisma.outlet.delete({
       where: { id }
     });
+  }
+
+  // Compatibility aliases to match legacy API used across controllers
+  async createOutlet(data: any) {
+    return this.createStrict(data);
+  }
+
+  async completeOnboarding(id: string) {
+    return this.markOnboardingCompleted(id);
+  }
+
+  async getOutletsByUserId(userId: string) {
+    return this.getByUserId(userId);
+  }
+
+  async getOutletById(id: string) {
+    return this.getById(id);
+  }
+
+  async getAllOutlets() {
+    return this.getAll();
   }
 }
 

@@ -1,0 +1,149 @@
+{
+  "client": "Thunder Client",
+  "collectionName": "Freddie Backend API",
+  "dateExported": "2026-01-10T15:51:00.000Z",
+  "version": "1.1",
+  "folders": [
+    {
+      "_id": "folder_auth",
+      "name": "Auth",
+      "containerId": ""
+    },
+    {
+      "_id": "folder_outlets",
+      "name": "Outlets",
+      "containerId": ""
+    },
+    {
+      "_id": "folder_health",
+      "name": "Health",
+      "containerId": ""
+    }
+  ],
+  "requests": [
+    {
+      "_id": "req_ping",
+      "colId": "col_freddie",
+      "containerId": "folder_health",
+      "name": "Ping",
+      "url": "http://localhost:3000/api/ping",
+      "method": "GET",
+      "sortNum": 10000,
+      "created": "2026-01-10T15:51:00.000Z",
+      "modified": "2026-01-10T15:51:00.000Z",
+      "headers": []
+    },
+    {
+      "_id": "req_health",
+      "colId": "col_freddie",
+      "containerId": "folder_health",
+      "name": "Health Status",
+      "url": "http://localhost:3000/api/health",
+      "method": "GET",
+      "sortNum": 20000,
+      "created": "2026-01-10T15:51:00.000Z",
+      "modified": "2026-01-10T15:51:00.000Z",
+      "headers": []
+    },
+    {
+      "_id": "req_admin_login",
+      "colId": "col_freddie",
+      "containerId": "folder_auth",
+      "name": "Admin Login",
+      "url": "http://localhost:3000/api/auth/admin/login",
+      "method": "POST",
+      "sortNum": 30000,
+      "created": "2026-01-10T15:51:00.000Z",
+      "modified": "2026-01-10T15:51:00.000Z",
+      "headers": [],
+      "body": {
+        "type": "json",
+        "raw": "{\n  \"email\": \"admin@example.com\",\n  \"password\": \"password123\"\n}"
+      }
+    },
+    {
+      "_id": "req_user_login",
+      "colId": "col_freddie",
+      "containerId": "folder_auth",
+      "name": "User Login",
+      "url": "http://localhost:3000/api/auth/user/login",
+      "method": "POST",
+      "sortNum": 40000,
+      "created": "2026-01-10T15:51:00.000Z",
+      "modified": "2026-01-10T15:51:00.000Z",
+      "headers": [],
+      "body": {
+        "type": "json",
+        "raw": "{\n  \"email\": \"user@example.com\",\n  \"password\": \"password123\"\n}"
+      }
+    },
+    {
+      "_id": "req_me",
+      "colId": "col_freddie",
+      "containerId": "folder_auth",
+      "name": "Get Current User (Me)",
+      "url": "http://localhost:3000/api/auth/me",
+      "method": "GET",
+      "sortNum": 50000,
+      "created": "2026-01-10T15:51:00.000Z",
+      "modified": "2026-01-10T15:51:00.000Z",
+      "headers": []
+    },
+    {
+      "_id": "req_get_all_outlets",
+      "colId": "col_freddie",
+      "containerId": "folder_outlets",
+      "name": "Get All Outlets",
+      "url": "http://localhost:3000/api/outlets",
+      "method": "GET",
+      "sortNum": 60000,
+      "created": "2026-01-10T15:51:00.000Z",
+      "modified": "2026-01-10T15:51:00.000Z",
+      "headers": []
+    },
+    {
+      "_id": "req_create_outlet",
+      "colId": "col_freddie",
+      "containerId": "folder_outlets",
+      "name": "Create Outlet",
+      "url": "http://localhost:3000/api/outlets",
+      "method": "POST",
+      "sortNum": 70000,
+      "created": "2026-01-10T15:51:00.000Z",
+      "modified": "2026-01-10T15:51:00.000Z",
+      "headers": [],
+      "body": {
+        "type": "json",
+        "raw": "{\n  \"name\": \"New Outlet\",\n  \"userId\": \"user_id_here\",\n  \"primaryContactName\": \"John Doe\",\n  \"contactEmail\": \"john@example.com\",\n  \"contactPhone\": \"+1234567890\",\n  \"subscriptionPlan\": \"PREMIUM\"\n}"
+      }
+    },
+    {
+      "_id": "req_get_outlet_by_id",
+      "colId": "col_freddie",
+      "containerId": "folder_outlets",
+      "name": "Get Outlet By ID",
+      "url": "http://localhost:3000/api/outlets/{{outletId}}",
+      "method": "GET",
+      "sortNum": 80000,
+      "created": "2026-01-10T15:51:00.000Z",
+      "modified": "2026-01-10T15:51:00.000Z",
+      "headers": []
+    },
+    {
+      "_id": "req_update_outlet",
+      "colId": "col_freddie",
+      "containerId": "folder_outlets",
+      "name": "Update Outlet",
+      "url": "http://localhost:3000/api/outlets/{{outletId}}",
+      "method": "PUT",
+      "sortNum": 90000,
+      "created": "2026-01-10T15:51:00.000Z",
+      "modified": "2026-01-10T15:51:00.000Z",
+      "headers": [],
+      "body": {
+        "type": "json",
+        "raw": "{\n  \"name\": \"Updated Outlet Name\",\n  \"apiStatus\": \"ENABLED\"\n}"
+      }
+    }
+  ]
+}
