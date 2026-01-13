@@ -70,15 +70,15 @@ const envSchema = z.object({
   GMB_ACCOUNT_NAME: z.string().optional(),
 
   // WhatsApp
-  WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().optional(),
-  WHATSAPP_PHONE_NUMBER_ID: z.string().optional(),
-  WHATSAPP_PHONE_NUMBER: z.string().optional(),
-  WHATSAPP_ACCESS_TOKEN: z.string().optional(),
-  WHATSAPP_VERIFY_TOKEN: z.string().optional(),
+  WHATSAPP_BUSINESS_ACCOUNT_ID: z.string().optional().or(z.literal("")),
+  WHATSAPP_PHONE_NUMBER_ID: z.string().optional().or(z.literal("")),
+  WHATSAPP_PHONE_NUMBER: z.string().optional().or(z.literal("")),
+  WHATSAPP_ACCESS_TOKEN: z.string().optional().or(z.literal("")),
+  WHATSAPP_VERIFY_TOKEN: z.string().optional().or(z.literal("")),
   WHATSAPP_TEMPLATE_LOW_RATING: z.string().optional(),
   WHATSAPP_TEMPLATE_REMINDER: z.string().optional(),
   WHATSAPP_TEMPLATE_CONFIRMATION: z.string().optional(),
-  WHATSAPP_WEBHOOK_URL: z.string().url().optional(),
+  WHATSAPP_WEBHOOK_URL: z.string().url().optional().or(z.literal("")),
 
   // Razorpay
   RAZORPAY_KEY_ID: z.string().optional(),

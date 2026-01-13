@@ -59,17 +59,21 @@ class WhatsAppService {
      */
     async sendTemplate(toNumber, templateName, parameters) {
         try {
+            if (!process.env.WHATSAPP_ACCESS_TOKEN) {
+                logger_1.logger.warn("WhatsApp disabled: missing access token");
+                return { ok: false, skipped: true };
+            }
             if (!this.accessToken || !this.phoneNumberId) {
                 logger_1.logger.warn("WhatsApp credentials not configured");
-                return false;
+                return { ok: false, skipped: true };
             }
             // CRITICAL: Validate this is not a group
             if (!this.validatePhoneNumber(toNumber)) {
-                return false;
+                return { ok: false };
             }
             // Check rate limit
             if (!this.checkRateLimit(toNumber)) {
-                return false;
+                return { ok: false };
             }
             const components = [];
             if (parameters && parameters.length > 0) {
@@ -100,11 +104,11 @@ class WhatsAppService {
                 template: templateName,
                 messageId: response.data?.messages?.[0]?.id,
             });
-            return true;
+            return { ok: true };
         }
         catch (error) {
             logger_1.logger.error(`Failed to send WhatsApp template to ${toNumber}`, error);
-            return false;
+            return { ok: false };
         }
     }
     /**
@@ -114,17 +118,21 @@ class WhatsAppService {
      */
     async sendText(toNumber, message) {
         try {
+            if (!process.env.WHATSAPP_ACCESS_TOKEN) {
+                logger_1.logger.warn("WhatsApp disabled: missing access token");
+                return { ok: false, skipped: true };
+            }
             if (!this.accessToken || !this.phoneNumberId) {
                 logger_1.logger.warn("WhatsApp credentials not configured");
-                return false;
+                return { ok: false, skipped: true };
             }
             // CRITICAL: Validate this is not a group
             if (!this.validatePhoneNumber(toNumber)) {
-                return false;
+                return { ok: false };
             }
             // Check rate limit
             if (!this.checkRateLimit(toNumber)) {
-                return false;
+                return { ok: false };
             }
             const payload = {
                 messaging_product: "whatsapp",
@@ -143,11 +151,11 @@ class WhatsAppService {
             logger_1.logger.info(`WhatsApp text sent to ${toNumber}`, {
                 messageId: response.data?.messages?.[0]?.id,
             });
-            return true;
+            return { ok: true };
         }
         catch (error) {
             logger_1.logger.error(`Failed to send WhatsApp text to ${toNumber}`, error);
-            return false;
+            return { ok: false };
         }
     }
     /**

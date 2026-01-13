@@ -281,7 +281,7 @@ export class UserController {
 
       const sent = await whatsappService.sendText(phoneNumber, "Your WhatsApp number has been connected to the app")
 
-      if (!sent) {
+      if (!sent.ok) {
         res.status(500).json({ error: "Failed to send test WhatsApp message; check integration credentials" })
         return
       }

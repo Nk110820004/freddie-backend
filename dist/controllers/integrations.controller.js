@@ -108,7 +108,7 @@ class IntegrationsController {
                 return;
             }
             const success = await whatsapp_1.whatsappService.sendText(phoneNumber, message);
-            if (!success) {
+            if (!success.ok) {
                 res.status(400).json({ error: "Failed to send message" });
                 return;
             }

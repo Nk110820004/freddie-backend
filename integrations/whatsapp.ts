@@ -82,21 +82,26 @@ export class WhatsAppService {
    * Send a WhatsApp message using template
    * Note: Templates must be pre-approved in WhatsApp Business Manager
    */
-  async sendTemplate(toNumber: string, templateName: string, parameters?: string[]): Promise<boolean> {
+  async sendTemplate(toNumber: string, templateName: string, parameters?: string[]): Promise<{ ok: boolean, skipped?: boolean }> {
     try {
+      if (!process.env.WHATSAPP_ACCESS_TOKEN) {
+        logger.warn("WhatsApp disabled: missing access token")
+        return { ok: false, skipped: true }
+      }
+
       if (!this.accessToken || !this.phoneNumberId) {
         logger.warn("WhatsApp credentials not configured")
-        return false
+        return { ok: false, skipped: true }
       }
 
       // CRITICAL: Validate this is not a group
       if (!this.validatePhoneNumber(toNumber)) {
-        return false
+        return { ok: false }
       }
 
       // Check rate limit
       if (!this.checkRateLimit(toNumber)) {
-        return false
+        return { ok: false }
       }
 
       const components = []
@@ -132,10 +137,10 @@ export class WhatsAppService {
         messageId: response.data?.messages?.[0]?.id,
       })
 
-      return true
+      return { ok: true }
     } catch (error) {
       logger.error(`Failed to send WhatsApp template to ${toNumber}`, error)
-      return false
+      return { ok: false }
     }
   }
 
@@ -144,21 +149,26 @@ export class WhatsAppService {
    * For notifications, use templates instead
    * CRITICAL: This is 1:1 only - group messaging is explicitly forbidden
    */
-  async sendText(toNumber: string, message: string): Promise<boolean> {
+  async sendText(toNumber: string, message: string): Promise<{ ok: boolean, skipped?: boolean }> {
     try {
+      if (!process.env.WHATSAPP_ACCESS_TOKEN) {
+        logger.warn("WhatsApp disabled: missing access token")
+        return { ok: false, skipped: true }
+      }
+
       if (!this.accessToken || !this.phoneNumberId) {
         logger.warn("WhatsApp credentials not configured")
-        return false
+        return { ok: false, skipped: true }
       }
 
       // CRITICAL: Validate this is not a group
       if (!this.validatePhoneNumber(toNumber)) {
-        return false
+        return { ok: false }
       }
 
       // Check rate limit
       if (!this.checkRateLimit(toNumber)) {
-        return false
+        return { ok: false }
       }
 
       const payload: WhatsAppMessage = {
@@ -181,10 +191,10 @@ export class WhatsAppService {
         messageId: response.data?.messages?.[0]?.id,
       })
 
-      return true
+      return { ok: true }
     } catch (error) {
       logger.error(`Failed to send WhatsApp text to ${toNumber}`, error)
-      return false
+      return { ok: false }
     }
   }
 
@@ -197,7 +207,7 @@ export class WhatsAppService {
     rating: number,
     customerName: string,
     reviewText: string,
-  ): Promise<boolean> {
+  ): Promise<{ ok: boolean, skipped?: boolean }> {
     const message = `CRITICAL REVIEW ALERT
 
 Outlet: ${outletName}
@@ -219,7 +229,7 @@ ACTION REQUIRED: Manual reply needed. Login to the admin dashboard to respond.`
     customerName: string,
     rating: number,
     reminderNumber: number,
-  ): Promise<boolean> {
+  ): Promise<{ ok: boolean, skipped?: boolean }> {
     const message = `REMINDER #${reminderNumber} - Pending Review Reply
 
 Outlet: ${outletName}
@@ -240,7 +250,7 @@ This review still requires your manual response. Please login to the dashboard t
     customerName: string,
     rating: number,
     hoursPending: number,
-  ): Promise<boolean> {
+  ): Promise<{ ok: boolean, skipped?: boolean }> {
     const message = `ESCALATED - Review Response Overdue
 
 Outlet: ${outletName}
