@@ -209,6 +209,34 @@ export class OutletRepository {
   async getAllOutlets() {
     return this.getAll();
   }
+
+  /**
+   * Update Google connection status for an outlet
+   */
+  async updateGoogleConnection(outletId: string, googlePlaceId: string | null, googleLocationName: string | null, googleConnected: boolean): Promise<Outlet | null> {
+    return prisma.outlet.update({
+      where: { id: outletId },
+      data: {
+        googlePlaceId,
+        googleLocationName,
+        googleConnected
+      }
+    });
+  }
+
+  /**
+   * Set Google connected status to true
+   */
+  async setGoogleConnected(outletId: string, googlePlaceId: string, googleLocationName: string): Promise<Outlet | null> {
+    return this.updateGoogleConnection(outletId, googlePlaceId, googleLocationName, true);
+  }
+
+  /**
+   * Disconnect Google integration
+   */
+  async disconnectGoogle(outletId: string): Promise<Outlet | null> {
+    return this.updateGoogleConnection(outletId, null, null, false);
+  }
 }
 
 export const outletsRepository = new OutletRepository();

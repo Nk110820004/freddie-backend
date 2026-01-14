@@ -35,6 +35,21 @@ export class GoogleMyBusinessService {
   }
 
   /**
+   * Create OAuth2 client for specific refresh token
+   */
+  private createOAuth2Client(refreshToken: string): any {
+    const oauth2Client = new google.auth.OAuth2(
+      env.GOOGLE_CLIENT_ID,
+      env.GOOGLE_CLIENT_SECRET,
+      env.GOOGLE_REDIRECT_URI,
+    )
+    oauth2Client.setCredentials({
+      refresh_token: refreshToken,
+    })
+    return oauth2Client
+  }
+
+  /**
    * Refresh OAuth token with retry logic
    */
   private async refreshAccessToken(attempt: number = 0): Promise<boolean> {
@@ -84,6 +99,64 @@ export class GoogleMyBusinessService {
       return tokens.refresh_token || null
     } catch (error) {
       logger.error("Failed to exchange OAuth code", error)
+      return null
+    }
+  }
+
+  /**
+   * Get OAuth URL with state parameter for outlet-specific connection
+   */
+  getAuthUrlWithState(state: string): string {
+    return this.oauth2Client.generateAuthUrl({
+      access_type: "offline",
+      prompt: "consent",
+      scope: [
+        "https://www.googleapis.com/auth/business.manage",
+        "https://www.googleapis.com/auth/plus.business.manage",
+      ],
+      state
+    })
+  }
+
+  /**
+   * Fetch locations for a specific outlet using its refresh token
+   */
+  async fetchLocationsForOutlet(refreshToken: string): Promise<any[] | null> {
+    try {
+      const oauth2Client = this.createOAuth2Client(refreshToken)
+
+      // Refresh access token
+      await oauth2Client.refreshAccessToken()
+
+      const mybusiness = google.mybusinessbusinessinformation("v1")
+      const mybusinessaccountmanagement = google.mybusinessaccountmanagement("v1")
+
+      const accountsResponse = await mybusinessaccountmanagement.accounts.list({
+        auth: oauth2Client,
+      })
+
+      const accounts = accountsResponse.data.accounts || []
+
+      if (accounts.length === 0) {
+        logger.warn("No GMB accounts found")
+        return []
+      }
+
+      const accountName = accounts[0].name
+
+      const locationsResponse = await mybusiness.accounts.locations.list({
+        auth: oauth2Client,
+        parent: accountName,
+        readMask: "name,title,phoneNumbers,storefrontAddress,metadata",
+      } as any)
+
+      const locations = locationsResponse.data.locations || []
+
+      logger.info(`Fetched ${locations.length} locations from GMB for outlet`)
+
+      return locations
+    } catch (error) {
+      logger.error("Failed to fetch GMB locations for outlet", error)
       return null
     }
   }

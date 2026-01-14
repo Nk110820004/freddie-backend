@@ -44,6 +44,12 @@ router.get("/stats", (req, res) => userController.getStats(req, res))
 router.get("/google-oauth-url", (req, res) => userController.getGoogleOAuthUrl(req, res))
 
 /**
+ * GET /api/user/google-callback
+ * Handle Google OAuth callback
+ */
+router.get("/google-callback", userController.handleGoogleCallback.bind(userController))
+
+/**
  * POST /api/user/connect-google
  * Connect Google account (exchange code and verify)
  */

@@ -8,7 +8,6 @@ const router = Router()
 router.get("/google/auth-url", integrationsController.getGoogleAuthUrl.bind(integrationsController))
 router.get(
   "/google/callback",
-  requireAuth,
   integrationsController.handleGoogleCallback.bind(integrationsController),
 )
 router.get("/google/locations", requireAuth, integrationsController.getGMBLocations.bind(integrationsController))

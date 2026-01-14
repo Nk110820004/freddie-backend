@@ -188,14 +188,17 @@ class UserController {
     }
     async getGoogleOAuthUrl(req, res) {
         try {
-            const oauth2Client = new googleapis_1.google.auth.OAuth2(env_1.default.GOOGLE_CLIENT_ID, env_1.default.GOOGLE_CLIENT_SECRET, env_1.default.GOOGLE_REDIRECT_URI);
+            const redirectUri = `${env_1.default.BACKEND_BASE_URL}/api/user/google-callback`;
+            const oauth2Client = new googleapis_1.google.auth.OAuth2(env_1.default.GOOGLE_CLIENT_ID, env_1.default.GOOGLE_CLIENT_SECRET, redirectUri);
             const scopes = ['https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile', 'https://www.googleapis.com/auth/business.manage'];
             const url = oauth2Client.generateAuthUrl({
                 access_type: 'offline',
                 scope: scopes,
                 include_granted_scopes: true,
+                prompt: 'consent',
+                state: req.userId, // Include user ID in state for callback
             });
-            res.status(200).json({ url });
+            res.status(200).json({ authUrl: url });
         }
         catch (error) {
             logger_1.logger.error("getGoogleOAuthUrl error", error);
@@ -216,22 +219,56 @@ class UserController {
                 res.status(400).json({ error: "Failed to exchange authorization code" });
                 return;
             }
-            oauth2Client.setCredentials(tokens);
-            const oauth2 = googleapis_1.google.oauth2({ auth: oauth2Client, version: "v2" });
-            const userinfo = await oauth2.userinfo.get();
-            const email = userinfo.data.email || null;
-            const profileId = userinfo.data.id || null;
-            const updated = await users_repo_1.usersRepository.updateUser(userId, {
-                googleEmail: email || undefined,
-                googleProfileId: profileId || undefined,
-                googleRefreshToken: tokens.refresh_token || undefined,
-            });
-            res.status(200).json({ message: "Google connected", user: { id: updated.id, googleEmail: updated.googleEmail } });
+            await this.saveGoogleTokens(userId, tokens, oauth2Client);
+            res.status(200).json({ message: "Google connected successfully" });
         }
         catch (error) {
             logger_1.logger.error("connectGoogle error", error);
             res.status(500).json({ error: "Failed to connect Google account" });
         }
+    }
+    async handleGoogleCallback(req, res) {
+        try {
+            const { code, state } = req.query;
+            if (!code || typeof code !== "string") {
+                res.status(400).send("Missing authorization code.");
+                return;
+            }
+            const userId = state;
+            if (!userId) {
+                res.status(400).send("Missing user context.");
+                return;
+            }
+            const redirectUri = `${env_1.default.BACKEND_BASE_URL}/api/user/google-callback`;
+            const oauth2Client = new googleapis_1.google.auth.OAuth2(env_1.default.GOOGLE_CLIENT_ID, env_1.default.GOOGLE_CLIENT_SECRET, redirectUri);
+            const { tokens } = await oauth2Client.getToken(code);
+            if (!tokens) {
+                res.status(400).send("Failed to exchange authorization code.");
+                return;
+            }
+            await this.saveGoogleTokens(userId, tokens, oauth2Client);
+            res.send(`
+        <h3>✅ Google Connected Successfully</h3>
+        <p>You can close this window and continue using the application.</p>
+        <script>window.close();</script>
+      `);
+        }
+        catch (error) {
+            logger_1.logger.error("handleGoogleCallback error", error);
+            res.status(500).send("OAuth failed: " + error.message);
+        }
+    }
+    async saveGoogleTokens(userId, tokens, oauth2Client) {
+        oauth2Client.setCredentials(tokens);
+        const oauth2 = googleapis_1.google.oauth2({ auth: oauth2Client, version: "v2" });
+        const userinfo = await oauth2.userinfo.get();
+        const email = userinfo.data.email || null;
+        const profileId = userinfo.data.id || null;
+        await users_repo_1.usersRepository.updateUser(userId, {
+            googleEmail: email || undefined,
+            googleProfileId: profileId || undefined,
+            googleRefreshToken: tokens.refresh_token || undefined,
+        });
     }
     async connectWhatsApp(req, res) {
         try {

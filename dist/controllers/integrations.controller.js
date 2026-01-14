@@ -4,6 +4,8 @@ exports.integrationsController = exports.IntegrationsController = void 0;
 const whatsapp_1 = require("../integrations/whatsapp");
 const gmb_1 = require("../integrations/gmb");
 const openai_1 = require("../integrations/openai");
+const google_connect_token_repo_1 = require("../repository/google-connect-token.repo");
+const google_integration_repo_1 = require("../repository/google-integration.repo");
 const logger_1 = require("../utils/logger");
 class IntegrationsController {
     /**
@@ -11,7 +13,16 @@ class IntegrationsController {
      */
     async getGoogleAuthUrl(req, res) {
         try {
-            const authUrl = gmb_1.gmbService.getAuthUrl();
+            const { token } = req.query;
+            let authUrl;
+            if (token && typeof token === "string") {
+                // Outlet-specific auth URL with state
+                authUrl = gmb_1.gmbService.getAuthUrlWithState(token);
+            }
+            else {
+                // Legacy system-level auth URL
+                authUrl = gmb_1.gmbService.getAuthUrl();
+            }
             res.status(200).json({
                 authUrl,
             });
@@ -26,7 +37,7 @@ class IntegrationsController {
      */
     async handleGoogleCallback(req, res) {
         try {
-            const { code } = req.query;
+            const { code, state } = req.query;
             if (!code || typeof code !== "string") {
                 res.status(400).json({ error: "Authorization code is required" });
                 return;
@@ -36,14 +47,46 @@ class IntegrationsController {
                 res.status(400).json({ error: "Failed to exchange authorization code" });
                 return;
             }
-            // In production, save refreshToken to user's profile
-            logger_1.logger.info("Google OAuth callback processed", {
-                userId: req.userId,
-            });
-            res.status(200).json({
-                message: "Google account connected successfully",
-                refreshToken,
-            });
+            if (state && typeof state === "string") {
+                // Outlet-specific connection using token
+                const connectToken = await google_connect_token_repo_1.googleConnectTokenRepository.findByToken(state);
+                if (!connectToken) {
+                    res.status(400).json({ error: "Invalid or expired connect token" });
+                    return;
+                }
+                if (connectToken.usedAt) {
+                    res.status(400).json({ error: "Connect token has already been used" });
+                    return;
+                }
+                if (connectToken.expiresAt < new Date()) {
+                    res.status(400).json({ error: "Connect token has expired" });
+                    return;
+                }
+                // Get Google account email (we'll need to make an API call to get this)
+                // For now, we'll store with a placeholder and update later
+                const googleEmail = "pending@google.com"; // TODO: Get actual email from Google API
+                // Create or update Google integration for the outlet
+                await google_integration_repo_1.googleIntegrationRepository.create({
+                    outletId: connectToken.outletId,
+                    googleEmail,
+                    refreshToken
+                });
+                // Mark token as used
+                await google_connect_token_repo_1.googleConnectTokenRepository.markAsUsed(state);
+                logger_1.logger.info(`Google OAuth callback processed for outlet: ${connectToken.outletId}`);
+                res.status(200).json({
+                    message: "Google My Business account connected successfully to outlet",
+                    outletId: connectToken.outletId
+                });
+            }
+            else {
+                // Legacy system-level GMB integration - refresh token is stored in environment
+                logger_1.logger.info("Google OAuth callback processed for system GMB integration");
+                res.status(200).json({
+                    message: "Google My Business account connected successfully",
+                    refreshToken,
+                });
+            }
         }
         catch (error) {
             logger_1.logger.error("Failed to handle Google callback", error);
@@ -145,6 +188,36 @@ class IntegrationsController {
         catch (error) {
             logger_1.logger.error("Failed to generate AI reply", error);
             res.status(500).json({ error: "Failed to generate reply" });
+        }
+    }
+    /**
+     * Fetch GMB locations for a specific outlet
+     */
+    async getGMBLocationsForOutlet(req, res) {
+        try {
+            const { outletId } = req.params;
+            if (!outletId) {
+                res.status(400).json({ error: "Outlet ID is required" });
+                return;
+            }
+            // Get Google integration for the outlet
+            const integration = await google_integration_repo_1.googleIntegrationRepository.findByOutletId(outletId);
+            if (!integration) {
+                res.status(400).json({ error: "No Google integration found for this outlet" });
+                return;
+            }
+            const locations = await gmb_1.gmbService.listLocations(integration.refreshToken);
+            if (!locations) {
+                res.status(400).json({ error: "Failed to fetch locations" });
+                return;
+            }
+            res.status(200).json({
+                locations,
+            });
+        }
+        catch (error) {
+            logger_1.logger.error("Failed to fetch GMB locations for outlet", error);
+            res.status(500).json({ error: "Failed to fetch locations" });
         }
     }
 }

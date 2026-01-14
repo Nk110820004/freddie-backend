@@ -20,6 +20,16 @@ class GoogleMyBusinessService {
         }
     }
     /**
+     * Create OAuth2 client for specific refresh token
+     */
+    createOAuth2Client(refreshToken) {
+        const oauth2Client = new googleapis_1.google.auth.OAuth2(env_1.default.GOOGLE_CLIENT_ID, env_1.default.GOOGLE_CLIENT_SECRET, env_1.default.GOOGLE_REDIRECT_URI);
+        oauth2Client.setCredentials({
+            refresh_token: refreshToken,
+        });
+        return oauth2Client;
+    }
+    /**
      * Refresh OAuth token with retry logic
      */
     async refreshAccessToken(attempt = 0) {
@@ -65,6 +75,53 @@ class GoogleMyBusinessService {
         }
         catch (error) {
             logger_1.logger.error("Failed to exchange OAuth code", error);
+            return null;
+        }
+    }
+    /**
+     * Get OAuth URL with state parameter for outlet-specific connection
+     */
+    getAuthUrlWithState(state) {
+        return this.oauth2Client.generateAuthUrl({
+            access_type: "offline",
+            prompt: "consent",
+            scope: [
+                "https://www.googleapis.com/auth/business.manage",
+                "https://www.googleapis.com/auth/plus.business.manage",
+            ],
+            state
+        });
+    }
+    /**
+     * Fetch locations for a specific outlet using its refresh token
+     */
+    async fetchLocationsForOutlet(refreshToken) {
+        try {
+            const oauth2Client = this.createOAuth2Client(refreshToken);
+            // Refresh access token
+            await oauth2Client.refreshAccessToken();
+            const mybusiness = googleapis_1.google.mybusinessbusinessinformation("v1");
+            const mybusinessaccountmanagement = googleapis_1.google.mybusinessaccountmanagement("v1");
+            const accountsResponse = await mybusinessaccountmanagement.accounts.list({
+                auth: oauth2Client,
+            });
+            const accounts = accountsResponse.data.accounts || [];
+            if (accounts.length === 0) {
+                logger_1.logger.warn("No GMB accounts found");
+                return [];
+            }
+            const accountName = accounts[0].name;
+            const locationsResponse = await mybusiness.accounts.locations.list({
+                auth: oauth2Client,
+                parent: accountName,
+                readMask: "name,title,phoneNumbers,storefrontAddress,metadata",
+            });
+            const locations = locationsResponse.data.locations || [];
+            logger_1.logger.info(`Fetched ${locations.length} locations from GMB for outlet`);
+            return locations;
+        }
+        catch (error) {
+            logger_1.logger.error("Failed to fetch GMB locations for outlet", error);
             return null;
         }
     }

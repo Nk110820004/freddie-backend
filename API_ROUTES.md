@@ -12,6 +12,7 @@ This document lists all available API routes in the Freddie Backend, including t
 | GET | `/user` | Redirect to user login |
 | POST | `/api/billing/webhook` | Razorpay webhook (public) |
 | GET | `/api/integrations/google/auth-url` | Google OAuth auth URL |
+| GET | `/api/integrations/google/callback` | Google OAuth callback |
 | POST | `/api/integrations/whatsapp/webhook` | WhatsApp webhook |
 
 ## Authentication Routes (`/api/auth`)
@@ -38,6 +39,7 @@ This document lists all available API routes in the Freddie Backend, including t
 | GET | `/api/user/reviews` | Yes | Get user's outlet reviews |
 | GET | `/api/user/stats` | Yes | Get user dashboard stats |
 | GET | `/api/user/google-oauth-url` | Yes | Get Google OAuth URL |
+| GET | `/api/user/google-callback` | No | Google OAuth callback |
 | POST | `/api/user/connect-google` | Yes | Connect Google account |
 
 ## Users Management Routes (`/api/users`)
@@ -62,6 +64,7 @@ This document lists all available API routes in the Freddie Backend, including t
 | POST | `/api/admin/users` | Yes | ADMIN+ | Create new user |
 | GET | `/api/admin/users` | Yes | ADMIN+ | Get all users |
 | PUT | `/api/admin/users/:userId/role` | Yes | ADMIN+ | Update user role |
+| PUT | `/api/admin/users/:userId/google-email` | Yes | ADMIN+ | Update user Google email |
 | DELETE | `/api/admin/users/:userId` | Yes | ADMIN+ | Delete user |
 | POST | `/api/admin/users/:userId/outlets` | Yes | ADMIN+ | Assign outlets to user |
 | POST | `/api/admin/outlets` | Yes | ADMIN+ | Onboard new outlet |
@@ -69,6 +72,9 @@ This document lists all available API routes in the Freddie Backend, including t
 | GET | `/api/admin/outlets` | Yes | ADMIN+ | Get all outlets |
 | GET | `/api/admin/reviews/manual-queue` | Yes | ADMIN+ | Get manual review queue |
 | POST | `/api/admin/reviews/:reviewId/manual-reply` | Yes | ADMIN+ | Submit manual reply |
+| POST | `/api/admin/outlets/:outletId/google/connect-link` | Yes | ADMIN+ | Generate Google connect link for outlet |
+| GET | `/api/admin/outlets/:outletId/google/locations` | Yes | ADMIN+ | Get Google locations for outlet |
+| POST | `/api/admin/outlets/:outletId/google/link-location` | Yes | ADMIN+ | Link Google location to outlet |
 
 ## Admin Users Routes (`/api/admin/users`)
 
@@ -132,8 +138,9 @@ This document lists all available API routes in the Freddie Backend, including t
 
 | Method | Path | Auth Required | Description |
 |--------|------|---------------|-------------|
-| GET | `/api/integrations/google/callback` | Yes | Google OAuth callback |
-| GET | `/api/integrations/google/locations` | Yes | Get GMB locations |
+| GET | `/api/integrations/google/auth-url` | No | Google OAuth auth URL (supports token param) |
+| GET | `/api/integrations/google/callback` | No | Google OAuth callback |
+| GET | `/api/integrations/google/locations` | Yes | Get GMB locations (legacy) |
 | POST | `/api/integrations/whatsapp/test` | Yes | Send test WhatsApp message |
 | POST | `/api/integrations/openai/generate-reply` | No | Generate AI reply |
 

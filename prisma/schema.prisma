@@ -147,6 +147,7 @@ model Outlet {
 
   googlePlaceId         String?
   googleLocationName    String?
+  googleConnected       Boolean            @default(false)
 
   createdAt             DateTime            @default(now())
   updatedAt             DateTime            @updatedAt
@@ -163,6 +164,8 @@ model Outlet {
   payments              Payment[]
   subscriptionAudits    SubscriptionAuditLog[]
   manualReviewQueue     ManualReviewQueue[]
+  googleConnectTokens   GoogleConnectToken[]
+  googleIntegration     GoogleIntegration?
 
   @@index([userId])
   @@index([status])
@@ -379,4 +382,31 @@ model ReviewWorkflow {
 
   @@index([currentState])
   @@index([nextReminderAt])
+}
+
+// Google Connect Tokens for outlet-specific Google OAuth flow
+model GoogleConnectToken {
+  id        String   @id @default(cuid())
+  outletId  String
+  outlet    Outlet   @relation(fields: [outletId], references: [id], onDelete: Cascade)
+  token     String   @unique // Random string for URL
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([token])
+  @@index([outletId])
+  @@index([expiresAt])
+}
+
+// Google Business Profile integrations per outlet
+model GoogleIntegration {
+  id            String   @id @default(cuid())
+  outletId      String   @unique
+  outlet        Outlet   @relation(fields: [outletId], references: [id], onDelete: Cascade)
+  googleEmail   String
+  refreshToken  String
+  connectedAt   DateTime @default(now())
+
+  @@index([outletId])
 }

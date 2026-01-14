@@ -37,6 +37,11 @@ router.get("/stats", (req, res) => user_controller_1.userController.getStats(req
  */
 router.get("/google-oauth-url", (req, res) => user_controller_1.userController.getGoogleOAuthUrl(req, res));
 /**
+ * GET /api/user/google-callback
+ * Handle Google OAuth callback
+ */
+router.get("/google-callback", user_controller_1.userController.handleGoogleCallback.bind(user_controller_1.userController));
+/**
  * POST /api/user/connect-google
  * Connect Google account (exchange code and verify)
  */

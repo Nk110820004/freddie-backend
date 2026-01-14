@@ -12,6 +12,7 @@ const outlets_repo_1 = require("../repository/outlets.repo");
 const manual_review_queue_repo_1 = require("../repository/manual-review-queue.repo");
 const database_1 = require("../database"); // assuming prisma client is here
 const billing_repo_1 = require("../repository/billing.repo");
+const google_connect_token_repo_1 = require("../repository/google-connect-token.repo");
 const outletRepo = outlets_repo_1.outletsRepository;
 const manualQueueRepo = new manual_review_queue_repo_1.ManualReviewQueueRepository(database_1.prisma);
 class AdminController {
@@ -100,6 +101,31 @@ class AdminController {
         catch (error) {
             logger_1.logger.error("Failed to update user role", error);
             res.status(500).json({ error: "Failed to update user role" });
+        }
+    }
+    async updateUserGoogleEmail(req, res) {
+        try {
+            const { userId } = req.params;
+            const { googleEmail } = req.body;
+            if (!googleEmail) {
+                res.status(400).json({ error: "googleEmail is required" });
+                return;
+            }
+            const user = await user_repo_1.userRepository.updateUser(userId, { googleEmail });
+            logger_1.logger.info(`User Google email updated: ${userId}`, { googleEmail });
+            res.status(200).json({
+                message: "User Google email updated",
+                user: {
+                    id: user.id,
+                    name: user.name,
+                    email: user.email,
+                    googleEmail: user.googleEmail,
+                },
+            });
+        }
+        catch (error) {
+            logger_1.logger.error("Failed to update user Google email", error);
+            res.status(500).json({ error: "Failed to update user Google email" });
         }
     }
     async deleteUser(req, res) {
@@ -414,6 +440,79 @@ class AdminController {
         catch (error) {
             logger_1.logger.error("Failed to submit manual reply", error);
             res.status(500).json({ error: "Failed to submit manual reply" });
+        }
+    }
+    /**
+     * Generate Google connect link for an outlet
+     */
+    async generateGoogleConnectLink(req, res) {
+        try {
+            const { outletId } = req.params;
+            if (!outletId) {
+                res.status(400).json({ error: "Outlet ID is required" });
+                return;
+            }
+            // Verify outlet exists
+            const outlet = await outletRepo.getById(outletId);
+            if (!outlet) {
+                res.status(404).json({ error: "Outlet not found" });
+                return;
+            }
+            // Generate random token
+            const token = crypto_1.default.randomBytes(32).toString('hex');
+            // Create token with 15 minute expiry
+            const expiresAt = new Date();
+            expiresAt.setMinutes(expiresAt.getMinutes() + 15);
+            await google_connect_token_repo_1.googleConnectTokenRepository.create({
+                outletId,
+                token,
+                expiresAt
+            });
+            // Generate connect URL
+            const connectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/connect-google?token=${token}`;
+            logger_1.logger.info(`Google connect link generated for outlet: ${outletId}`);
+            res.status(200).json({
+                connectUrl
+            });
+        }
+        catch (error) {
+            logger_1.logger.error("Failed to generate Google connect link", error);
+            res.status(500).json({ error: "Failed to generate connect link" });
+        }
+    }
+    /**
+     * Link Google location to outlet
+     */
+    async linkGoogleLocation(req, res) {
+        try {
+            const { outletId } = req.params;
+            const { googleLocationName, placeId } = req.body;
+            if (!outletId || !googleLocationName || !placeId) {
+                res.status(400).json({ error: "Outlet ID, Google location name, and place ID are required" });
+                return;
+            }
+            // Verify outlet exists
+            const outlet = await outletRepo.getById(outletId);
+            if (!outlet) {
+                res.status(404).json({ error: "Outlet not found" });
+                return;
+            }
+            // Update outlet with Google location info
+            await outletRepo.setGoogleConnected(outletId, placeId, googleLocationName);
+            logger_1.logger.info(`Google location linked to outlet: ${outletId}, location: ${googleLocationName}`);
+            res.status(200).json({
+                message: "Google location linked successfully",
+                outlet: {
+                    id: outletId,
+                    googleLocationName,
+                    placeId,
+                    googleConnected: true
+                }
+            });
+        }
+        catch (error) {
+            logger_1.logger.error("Failed to link Google location", error);
+            res.status(500).json({ error: "Failed to link Google location" });
         }
     }
 }

@@ -1,4 +1,5 @@
 import type { Request, Response } from "express"
+import type { AuthRequest } from "../middleware/auth.middleware"
 import { z } from "zod"
 import { usersRepository } from "../repository/users.repo"
 import { reviewsRepository } from "../repository/reviews.repo"
@@ -208,16 +209,19 @@ export class UserController {
     }
   }
 
-  async getGoogleOAuthUrl(req: Request, res: Response): Promise<void> {
+  async getGoogleOAuthUrl(req: AuthRequest, res: Response): Promise<void> {
     try {
-      const oauth2Client = new google.auth.OAuth2(env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, env.GOOGLE_REDIRECT_URI)
+      const redirectUri = `${env.BACKEND_BASE_URL}/api/user/google-callback`
+      const oauth2Client = new google.auth.OAuth2(env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, redirectUri)
       const scopes = ['https://www.googleapis.com/auth/userinfo.email', 'https://www.googleapis.com/auth/userinfo.profile', 'https://www.googleapis.com/auth/business.manage']
       const url = oauth2Client.generateAuthUrl({
         access_type: 'offline',
         scope: scopes,
         include_granted_scopes: true,
+        prompt: 'consent',
+        state: req.userId, // Include user ID in state for callback
       })
-      res.status(200).json({ url })
+      res.status(200).json({ authUrl: url })
     } catch (error) {
       logger.error("getGoogleOAuthUrl error", error)
       res.status(500).json({ error: "Failed to generate OAuth URL" })
@@ -242,24 +246,65 @@ export class UserController {
         return
       }
 
-      oauth2Client.setCredentials(tokens as any)
-      const oauth2 = google.oauth2({ auth: oauth2Client, version: "v2" })
-      const userinfo = await oauth2.userinfo.get()
+      await this.saveGoogleTokens(userId, tokens, oauth2Client)
 
-      const email = userinfo.data.email || null
-      const profileId = userinfo.data.id || null
-
-      const updated = await usersRepository.updateUser(userId, {
-        googleEmail: email || undefined,
-        googleProfileId: profileId || undefined,
-        googleRefreshToken: tokens.refresh_token || undefined,
-      })
-
-      res.status(200).json({ message: "Google connected", user: { id: updated.id, googleEmail: updated.googleEmail } })
+      res.status(200).json({ message: "Google connected successfully" })
     } catch (error) {
       logger.error("connectGoogle error", error)
       res.status(500).json({ error: "Failed to connect Google account" })
     }
+  }
+
+  async handleGoogleCallback(req: Request, res: Response): Promise<void> {
+    try {
+      const { code, state } = req.query
+
+      if (!code || typeof code !== "string") {
+        res.status(400).send("Missing authorization code.")
+        return
+      }
+
+      const userId = state as string
+      if (!userId) {
+        res.status(400).send("Missing user context.")
+        return
+      }
+
+      const redirectUri = `${env.BACKEND_BASE_URL}/api/user/google-callback`
+      const oauth2Client = new google.auth.OAuth2(env.GOOGLE_CLIENT_ID, env.GOOGLE_CLIENT_SECRET, redirectUri)
+      const { tokens } = await oauth2Client.getToken(code)
+
+      if (!tokens) {
+        res.status(400).send("Failed to exchange authorization code.")
+        return
+      }
+
+      await this.saveGoogleTokens(userId, tokens, oauth2Client)
+
+      res.send(`
+        <h3>✅ Google Connected Successfully</h3>
+        <p>You can close this window and continue using the application.</p>
+        <script>window.close();</script>
+      `)
+    } catch (error) {
+      logger.error("handleGoogleCallback error", error)
+      res.status(500).send("OAuth failed: " + (error as Error).message)
+    }
+  }
+
+  private async saveGoogleTokens(userId: string, tokens: any, oauth2Client: any): Promise<void> {
+    oauth2Client.setCredentials(tokens as any)
+    const oauth2 = google.oauth2({ auth: oauth2Client, version: "v2" })
+    const userinfo = await oauth2.userinfo.get()
+
+    const email = userinfo.data.email || null
+    const profileId = userinfo.data.id || null
+
+    await usersRepository.updateUser(userId, {
+      googleEmail: email || undefined,
+      googleProfileId: profileId || undefined,
+      googleRefreshToken: tokens.refresh_token || undefined,
+    })
   }
 
   async connectWhatsApp(req: Request, res: Response): Promise<void> {

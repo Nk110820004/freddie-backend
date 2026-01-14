@@ -164,6 +164,31 @@ class OutletRepository {
     async getAllOutlets() {
         return this.getAll();
     }
+    /**
+     * Update Google connection status for an outlet
+     */
+    async updateGoogleConnection(outletId, googlePlaceId, googleLocationName, googleConnected) {
+        return database_1.prisma.outlet.update({
+            where: { id: outletId },
+            data: {
+                googlePlaceId,
+                googleLocationName,
+                googleConnected
+            }
+        });
+    }
+    /**
+     * Set Google connected status to true
+     */
+    async setGoogleConnected(outletId, googlePlaceId, googleLocationName) {
+        return this.updateGoogleConnection(outletId, googlePlaceId, googleLocationName, true);
+    }
+    /**
+     * Disconnect Google integration
+     */
+    async disconnectGoogle(outletId) {
+        return this.updateGoogleConnection(outletId, null, null, false);
+    }
 }
 exports.OutletRepository = OutletRepository;
 exports.outletsRepository = new OutletRepository();
