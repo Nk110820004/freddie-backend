@@ -73,10 +73,13 @@ class IntegrationsController {
                 });
                 // Mark token as used
                 await google_connect_token_repo_1.googleConnectTokenRepository.markAsUsed(state);
+                // Fetch available Google locations for selection
+                const locations = await gmb_1.gmbService.listLocations(refreshToken);
                 logger_1.logger.info(`Google OAuth callback processed for outlet: ${connectToken.outletId}`);
                 res.status(200).json({
                     message: "Google My Business account connected successfully to outlet",
-                    outletId: connectToken.outletId
+                    outletId: connectToken.outletId,
+                    locations: locations || []
                 });
             }
             else {

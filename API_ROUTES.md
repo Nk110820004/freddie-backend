@@ -139,7 +139,7 @@ This document lists all available API routes in the Freddie Backend, including t
 | Method | Path | Auth Required | Description |
 |--------|------|---------------|-------------|
 | GET | `/api/integrations/google/auth-url` | No | Google OAuth auth URL (supports token param) |
-| GET | `/api/integrations/google/callback` | No | Google OAuth callback |
+| GET | `/api/integrations/google/callback` | No | Google OAuth callback (returns locations for selection) |
 | GET | `/api/integrations/google/locations` | Yes | Get GMB locations (legacy) |
 | POST | `/api/integrations/whatsapp/test` | Yes | Send test WhatsApp message |
 | POST | `/api/integrations/openai/generate-reply` | No | Generate AI reply |

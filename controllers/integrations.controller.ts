@@ -86,11 +86,15 @@ export class IntegrationsController {
         // Mark token as used
         await googleConnectTokenRepository.markAsUsed(state)
 
+        // Fetch available Google locations for selection
+        const locations = await gmbService.listLocations(refreshToken)
+
         logger.info(`Google OAuth callback processed for outlet: ${connectToken.outletId}`)
 
         res.status(200).json({
           message: "Google My Business account connected successfully to outlet",
-          outletId: connectToken.outletId
+          outletId: connectToken.outletId,
+          locations: locations || []
         })
       } else {
         // Legacy system-level GMB integration - refresh token is stored in environment
