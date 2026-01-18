@@ -17,7 +17,25 @@ class GoogleConnectTokenRepository {
     async findByToken(token) {
         return database_1.prisma.googleConnectToken.findUnique({
             where: { token },
-            include: { outlet: true }
+            include: { outlet: true, user: true }
+        });
+    }
+    /**
+     * Find latest token for a user
+     */
+    async findLatestByUserId(userId) {
+        return database_1.prisma.googleConnectToken.findFirst({
+            where: { userId },
+            orderBy: { createdAt: 'desc' }
+        });
+    }
+    /**
+     * Update last sent at
+     */
+    async updateLastSentAt(token) {
+        return database_1.prisma.googleConnectToken.update({
+            where: { token },
+            data: { lastSentAt: new Date() }
         });
     }
     /**

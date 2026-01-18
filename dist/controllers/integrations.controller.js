@@ -9,23 +9,26 @@ const google_integration_repo_1 = require("../repository/google-integration.repo
 const logger_1 = require("../utils/logger");
 class IntegrationsController {
     /**
+     * ============================================================
+     * GOOGLE OAUTH
+     * ============================================================
+     */
+    /**
      * Get Google OAuth URL
+     * - If `token` is present => outlet-specific connect flow (state)
+     * - Else => legacy system flow
      */
     async getGoogleAuthUrl(req, res) {
         try {
             const { token } = req.query;
             let authUrl;
             if (token && typeof token === "string") {
-                // Outlet-specific auth URL with state
                 authUrl = gmb_1.gmbService.getAuthUrlWithState(token);
             }
             else {
-                // Legacy system-level auth URL
                 authUrl = gmb_1.gmbService.getAuthUrl();
             }
-            res.status(200).json({
-                authUrl,
-            });
+            res.status(200).json({ authUrl });
         }
         catch (error) {
             logger_1.logger.error("Failed to get Google auth URL", error);
@@ -34,6 +37,16 @@ class IntegrationsController {
     }
     /**
      * Handle Google OAuth callback
+     *
+     * If `state` exists:
+     * - treat as outlet connect flow
+     * - validate connect token
+     * - save refresh token for outlet
+     * - return locations list for selection
+     *
+     * If `state` not present:
+     * - legacy system-level flow
+     * - DO NOT return refresh token (security)
      */
     async handleGoogleCallback(req, res) {
         try {
@@ -47,8 +60,10 @@ class IntegrationsController {
                 res.status(400).json({ error: "Failed to exchange authorization code" });
                 return;
             }
+            // ------------------------------------------
+            // Outlet-specific connection (recommended flow)
+            // ------------------------------------------
             if (state && typeof state === "string") {
-                // Outlet-specific connection using token
                 const connectToken = await google_connect_token_repo_1.googleConnectTokenRepository.findByToken(state);
                 if (!connectToken) {
                     res.status(400).json({ error: "Invalid or expired connect token" });
@@ -62,34 +77,51 @@ class IntegrationsController {
                     res.status(400).json({ error: "Connect token has expired" });
                     return;
                 }
-                // Get Google account email (we'll need to make an API call to get this)
-                // For now, we'll store with a placeholder and update later
-                const googleEmail = "pending@google.com"; // TODO: Get actual email from Google API
-                // Create or update Google integration for the outlet
-                await google_integration_repo_1.googleIntegrationRepository.create({
-                    outletId: connectToken.outletId,
-                    googleEmail,
-                    refreshToken
-                });
+                /**
+                 * NOTE:
+                 * Google email is optional; you can later fetch via People API if needed.
+                 * Keeping placeholder is fine for now.
+                 */
+                const googleEmail = "pending@google.com";
+                // If outletId is present, create integration
+                if (connectToken.outletId) {
+                    // Create / update integration record
+                    await google_integration_repo_1.googleIntegrationRepository.create({
+                        outletId: connectToken.outletId,
+                        googleEmail,
+                        refreshToken,
+                    });
+                }
+                else if (connectToken.userId) {
+                    // If it's a user-level connect (Step 2 of wizard)
+                    const { usersRepository } = await import("../repository/users.repo.js");
+                    await usersRepository.updateUser(connectToken.userId, {
+                        googleRefreshToken: refreshToken,
+                        googleEmail,
+                    });
+                }
                 // Mark token as used
                 await google_connect_token_repo_1.googleConnectTokenRepository.markAsUsed(state);
-                // Fetch available Google locations for selection
+                // Fetch locations so outlet can select which GBP location to link
                 const locations = await gmb_1.gmbService.listLocations(refreshToken);
-                logger_1.logger.info(`Google OAuth callback processed for outlet: ${connectToken.outletId}`);
-                res.status(200).json({
-                    message: "Google My Business account connected successfully to outlet",
-                    outletId: connectToken.outletId,
-                    locations: locations || []
+                logger_1.logger.info("Google OAuth callback processed for outlet", {
+                    outletId: connectToken.outletId ?? null,
                 });
-            }
-            else {
-                // Legacy system-level GMB integration - refresh token is stored in environment
-                logger_1.logger.info("Google OAuth callback processed for system GMB integration");
                 res.status(200).json({
-                    message: "Google My Business account connected successfully",
-                    refreshToken,
+                    message: "Google Business Profile connected successfully to outlet",
+                    outletId: connectToken.outletId ?? null,
+                    locations: locations || [],
                 });
+                return;
             }
+            // ------------------------------------------
+            // Legacy system-level flow (no state)
+            // ------------------------------------------
+            logger_1.logger.warn("Google OAuth callback processed WITHOUT state (legacy flow).");
+            // ✅ SECURITY: do not return refresh token publicly
+            res.status(200).json({
+                message: "Google Business Profile connected successfully",
+            });
         }
         catch (error) {
             logger_1.logger.error("Failed to handle Google callback", error);
@@ -97,7 +129,7 @@ class IntegrationsController {
         }
     }
     /**
-     * Fetch GMB locations
+     * Fetch GMB locations (legacy/global)
      */
     async getGMBLocations(req, res) {
         try {
@@ -106,9 +138,7 @@ class IntegrationsController {
                 res.status(400).json({ error: "Failed to fetch locations" });
                 return;
             }
-            res.status(200).json({
-                locations,
-            });
+            res.status(200).json({ locations });
         }
         catch (error) {
             logger_1.logger.error("Failed to fetch GMB locations", error);
@@ -116,11 +146,44 @@ class IntegrationsController {
         }
     }
     /**
-     * WhatsApp webhook handler
+     * Fetch GMB locations for a specific outlet (uses outlet refresh token)
+     */
+    async getGMBLocationsForOutlet(req, res) {
+        try {
+            const { outletId } = req.params;
+            if (!outletId) {
+                res.status(400).json({ error: "Outlet ID is required" });
+                return;
+            }
+            const integration = await google_integration_repo_1.googleIntegrationRepository.findByOutletId(outletId);
+            if (!integration) {
+                res.status(400).json({ error: "No Google integration found for this outlet" });
+                return;
+            }
+            const locations = await gmb_1.gmbService.listLocations(integration.refreshToken);
+            if (!locations) {
+                res.status(400).json({ error: "Failed to fetch locations" });
+                return;
+            }
+            res.status(200).json({ locations });
+        }
+        catch (error) {
+            logger_1.logger.error("Failed to fetch GMB locations for outlet", error);
+            res.status(500).json({ error: "Failed to fetch locations" });
+        }
+    }
+    /**
+     * ============================================================
+     * WHATSAPP WEBHOOK
+     * ============================================================
+     */
+    /**
+     * WhatsApp webhook handler (verification + incoming messages)
      */
     async handleWhatsAppWebhook(req, res) {
         try {
             const hub = req.query.hub;
+            // Verification handshake
             if (hub && hub.mode === "subscribe" && hub.verify_token) {
                 const isValid = whatsapp_1.whatsappService.verifyWebhook(hub.verify_token);
                 if (isValid) {
@@ -131,7 +194,7 @@ class IntegrationsController {
                 res.status(403).json({ error: "Invalid verify token" });
                 return;
             }
-            // Handle incoming messages
+            // Incoming message event
             const message = req.body;
             logger_1.logger.info("Received WhatsApp webhook", {
                 from: message?.entry?.[0]?.changes?.[0]?.value?.messages?.[0]?.from,
@@ -144,83 +207,73 @@ class IntegrationsController {
         }
     }
     /**
-     * Test WhatsApp message sending
+     * ============================================================
+     * WHATSAPP TEST (TEMPLATE ONLY)
+     * ============================================================
+     */
+    /**
+     * Test WhatsApp template message sending
+     * Template-only policy enforced.
      */
     async sendTestMessage(req, res) {
         try {
-            const { phoneNumber, message } = req.body;
-            if (!phoneNumber || !message) {
-                res.status(400).json({ error: "phoneNumber and message are required" });
+            const { phoneNumber } = req.body;
+            if (!phoneNumber) {
+                res.status(400).json({ error: "phoneNumber is required" });
                 return;
             }
-            const success = await whatsapp_1.whatsappService.sendText(phoneNumber, message);
-            if (!success.ok) {
-                res.status(400).json({ error: "Failed to send message" });
+            /**
+             * ✅ This template must exist in WhatsApp Manager:
+             * freddie_manual_review_reminder_v1 (en_US)
+             */
+            const result = await whatsapp_1.whatsappService.sendTemplate(phoneNumber, "freddie_manual_review_reminder_v1", "en_US", ["Test Outlet", "3 stars", "Test Customer", "1"]);
+            if (!result.ok) {
+                res.status(400).json({ error: "Failed to send template message" });
                 return;
             }
             res.status(200).json({
-                message: "Message sent successfully",
+                message: "WhatsApp template message sent successfully",
             });
         }
         catch (error) {
-            logger_1.logger.error("Failed to send test message", error);
+            logger_1.logger.error("Failed to send test template message", error);
             res.status(500).json({ error: "Failed to send message" });
         }
     }
     /**
-     * Test AI reply generation
+     * ============================================================
+     * OPENAI TEST ENDPOINT
+     * ============================================================
+     */
+    /**
+     * Test AI reply generation (matches your worker payload)
      */
     async generateAIReply(req, res) {
         try {
-            const { reviewText, rating, outletName } = req.body;
-            if (!reviewText || !rating || !outletName) {
+            const { rating, customerName, reviewText, outletName, storeLocation, businessCategory, } = req.body;
+            if (rating == null || !customerName || !outletName || !storeLocation || !businessCategory) {
                 res.status(400).json({
-                    error: "reviewText, rating, and outletName are required",
+                    error: "rating, customerName, reviewText, outletName, storeLocation, businessCategory are required",
                 });
                 return;
             }
-            const reply = await openai_1.openaiService.generateReply(reviewText, rating, outletName);
+            const reply = await openai_1.openaiService.generateReply({
+                rating: Number(rating),
+                customerName: String(customerName),
+                reviewText: String(reviewText || ""),
+                outletName: String(outletName),
+                storeLocation: String(storeLocation),
+                businessCategory: String(businessCategory),
+            });
             if (!reply) {
                 res.status(400).json({ error: "Failed to generate reply" });
                 return;
             }
-            res.status(200).json({
-                reply,
-            });
+            res.status(200).json({ reply });
         }
         catch (error) {
             logger_1.logger.error("Failed to generate AI reply", error);
             res.status(500).json({ error: "Failed to generate reply" });
-        }
-    }
-    /**
-     * Fetch GMB locations for a specific outlet
-     */
-    async getGMBLocationsForOutlet(req, res) {
-        try {
-            const { outletId } = req.params;
-            if (!outletId) {
-                res.status(400).json({ error: "Outlet ID is required" });
-                return;
-            }
-            // Get Google integration for the outlet
-            const integration = await google_integration_repo_1.googleIntegrationRepository.findByOutletId(outletId);
-            if (!integration) {
-                res.status(400).json({ error: "No Google integration found for this outlet" });
-                return;
-            }
-            const locations = await gmb_1.gmbService.listLocations(integration.refreshToken);
-            if (!locations) {
-                res.status(400).json({ error: "Failed to fetch locations" });
-                return;
-            }
-            res.status(200).json({
-                locations,
-            });
-        }
-        catch (error) {
-            logger_1.logger.error("Failed to fetch GMB locations for outlet", error);
-            res.status(500).json({ error: "Failed to fetch locations" });
         }
     }
 }

@@ -7,9 +7,6 @@ exports.gmbService = exports.GoogleMyBusinessService = void 0;
 const googleapis_1 = require("googleapis");
 const env_1 = __importDefault(require("../config/env"));
 const logger_1 = require("../utils/logger");
-// Retry configuration with exponential backoff
-const MAX_RETRIES = 3;
-const INITIAL_RETRY_DELAY_MS = 1000;
 class GoogleMyBusinessService {
     constructor() {
         this.oauth2Client = new googleapis_1.google.auth.OAuth2(env_1.default.GOOGLE_CLIENT_ID, env_1.default.GOOGLE_CLIENT_SECRET, env_1.default.GOOGLE_REDIRECT_URI);
@@ -30,28 +27,6 @@ class GoogleMyBusinessService {
         return oauth2Client;
     }
     /**
-     * Refresh OAuth token with retry logic
-     */
-    async refreshAccessToken(attempt = 0) {
-        try {
-            logger_1.logger.debug(`Refreshing Google access token (attempt ${attempt + 1})`);
-            const { credentials } = await this.oauth2Client.refreshAccessToken();
-            this.oauth2Client.setCredentials(credentials);
-            logger_1.logger.info("Google access token refreshed successfully");
-            return true;
-        }
-        catch (error) {
-            logger_1.logger.error(`Failed to refresh access token (attempt ${attempt + 1})`, error);
-            if (attempt < MAX_RETRIES) {
-                const delayMs = INITIAL_RETRY_DELAY_MS * Math.pow(2, attempt);
-                logger_1.logger.info(`Retrying token refresh in ${delayMs}ms...`);
-                await new Promise(resolve => setTimeout(resolve, delayMs));
-                return this.refreshAccessToken(attempt + 1);
-            }
-            return false;
-        }
-    }
-    /**
      * Get OAuth URL for user authorization
      */
     getAuthUrl() {
@@ -59,6 +34,7 @@ class GoogleMyBusinessService {
             access_type: "offline",
             scope: [
                 "https://www.googleapis.com/auth/business.manage",
+                // plus.business.manage is legacy but ok to keep
                 "https://www.googleapis.com/auth/plus.business.manage",
             ],
             prompt: "consent",
@@ -89,7 +65,7 @@ class GoogleMyBusinessService {
                 "https://www.googleapis.com/auth/business.manage",
                 "https://www.googleapis.com/auth/plus.business.manage",
             ],
-            state
+            state,
         });
     }
     /**
@@ -98,8 +74,8 @@ class GoogleMyBusinessService {
     async fetchLocationsForOutlet(refreshToken) {
         try {
             const oauth2Client = this.createOAuth2Client(refreshToken);
-            // Refresh access token
-            await oauth2Client.refreshAccessToken();
+            // ✅ Correct way to refresh/ensure access token
+            await oauth2Client.getAccessToken();
             const mybusiness = googleapis_1.google.mybusinessbusinessinformation("v1");
             const mybusinessaccountmanagement = googleapis_1.google.mybusinessaccountmanagement("v1");
             const accountsResponse = await mybusinessaccountmanagement.accounts.list({
@@ -126,55 +102,37 @@ class GoogleMyBusinessService {
         }
     }
     /**
-     * Fetch reviews from a GMB location with retry and pagination
-     * Returns reviews from last 15 minutes if lastFetchTime provided
+     * Fetch reviews from a GMB location with pagination.
+     * If lastFetchTime is provided, returns only recently updated/created reviews.
      */
-    async fetchReviews(locationName, lastFetchTime) {
+    async fetchReviews(locationName, refreshToken, lastFetchTime) {
         try {
-            if (!env_1.default.GOOGLE_REFRESH_TOKEN) {
-                logger_1.logger.warn("Google refresh token not configured");
+            if (!refreshToken) {
+                logger_1.logger.warn("Google refresh token not provided for fetchReviews");
                 return null;
             }
-            // Ensure token is fresh before fetching
-            const tokenRefreshed = await this.refreshAccessToken();
-            if (!tokenRefreshed) {
-                logger_1.logger.error("Could not refresh access token for GMB API");
-                return null;
-            }
+            const oauth2Client = this.createOAuth2Client(refreshToken);
             const mybusiness = googleapis_1.google.mybusiness?.("v4");
             let allReviews = [];
             let pageToken = undefined;
             let pageCount = 0;
-            const MAX_PAGES = 5; // Limit pagination to prevent excessive API calls
-            // Paginate through all reviews
+            const MAX_PAGES = 5;
             do {
-                try {
-                    const response = await mybusiness.locations.reviews.list({
-                        auth: this.oauth2Client,
-                        parent: locationName,
-                        pageSize: 50,
-                        pageToken,
-                    });
-                    const reviews = response.data.reviews || [];
-                    allReviews = allReviews.concat(reviews);
-                    pageToken = response.data.nextPageToken;
-                    pageCount++;
-                    logger_1.logger.debug(`Fetched page ${pageCount} with ${reviews.length} reviews`);
-                    if (pageCount >= MAX_PAGES && pageToken) {
-                        logger_1.logger.warn(`Pagination limit reached (${MAX_PAGES} pages) - stopping fetch`);
-                        break;
-                    }
-                }
-                catch (pageError) {
-                    logger_1.logger.error(`Error fetching page ${pageCount + 1}`, pageError);
-                    if (pageError.status === 401) {
-                        logger_1.logger.warn("Token expired, refresh failed");
-                        return null;
-                    }
-                    break; // Stop pagination on error
+                const response = await mybusiness.locations.reviews.list({
+                    auth: oauth2Client,
+                    parent: locationName,
+                    pageSize: 50,
+                    pageToken,
+                });
+                const reviews = response.data.reviews || [];
+                allReviews = allReviews.concat(reviews);
+                pageToken = response.data.nextPageToken;
+                pageCount++;
+                if (pageCount >= MAX_PAGES && pageToken) {
+                    logger_1.logger.warn(`Pagination limit reached (${MAX_PAGES} pages) - stopping fetch`);
+                    break;
                 }
             } while (pageToken);
-            // Filter by time if provided (last 15 minutes)
             if (lastFetchTime) {
                 allReviews = allReviews.filter((review) => {
                     const reviewTime = new Date(review.updateTime || review.createTime);
@@ -182,7 +140,11 @@ class GoogleMyBusinessService {
                 });
             }
             const mapped = allReviews.map((r) => ({
+                // ✅ Short id for DB idempotency if needed
                 reviewId: r.name?.split("/").pop() || "",
+                // ✅ Full resource name (most reliable for replying)
+                reviewName: r.name,
+                locationName,
                 reviewer: {
                     displayName: r.reviewer?.displayName || "Anonymous",
                     profilePhotoUrl: r.reviewer?.profilePhotoUrl,
@@ -201,7 +163,6 @@ class GoogleMyBusinessService {
             return mapped;
         }
         catch (error) {
-            // Map Google API errors to actionable messages
             if (error.status === 401) {
                 logger_1.logger.error("GMB: Unauthorized - refresh token may be invalid", error.message);
             }
@@ -209,10 +170,10 @@ class GoogleMyBusinessService {
                 logger_1.logger.error("GMB: Forbidden - check permissions", error.message);
             }
             else if (error.status === 429) {
-                logger_1.logger.error("GMB: Rate limited - backing off", error.message);
+                logger_1.logger.error("GMB: Rate limited", error.message);
             }
             else if (error.status === 503) {
-                logger_1.logger.error("GMB: Service unavailable - will retry next cycle", error.message);
+                logger_1.logger.error("GMB: Service unavailable", error.message);
             }
             else {
                 logger_1.logger.error("Failed to fetch GMB reviews", error);
@@ -229,25 +190,21 @@ class GoogleMyBusinessService {
     }
     /**
      * Post a reply to a review
+     *
+     * ✅ Uses proper review resource name.
      */
     async postReply(locationName, reviewId, replyText, refreshToken) {
         try {
-            const oauth2Client = new googleapis_1.google.auth.OAuth2(env_1.default.GOOGLE_CLIENT_ID, env_1.default.GOOGLE_CLIENT_SECRET, env_1.default.GOOGLE_REDIRECT_URI);
-            oauth2Client.setCredentials({
-                refresh_token: refreshToken,
-            });
+            const oauth2Client = this.createOAuth2Client(refreshToken);
             const mybusiness = googleapis_1.google.mybusiness?.("v4");
+            // review resource name
+            const reviewName = `${locationName}/reviews/${reviewId}`;
             await mybusiness.locations.reviews.updateReply({
                 auth: oauth2Client,
-                name: `${locationName}/reviews/${reviewId}`,
-                requestBody: {
-                    comment: replyText,
-                },
+                name: reviewName,
+                requestBody: { comment: replyText },
             });
-            logger_1.logger.info("Posted reply to GMB review", {
-                locationName,
-                reviewId,
-            });
+            logger_1.logger.info("Posted reply to GMB review", { locationName, reviewId });
             return true;
         }
         catch (error) {
@@ -265,10 +222,7 @@ class GoogleMyBusinessService {
                 logger_1.logger.warn("Google refresh token not configured");
                 return null;
             }
-            const oauth2Client = new googleapis_1.google.auth.OAuth2(env_1.default.GOOGLE_CLIENT_ID, env_1.default.GOOGLE_CLIENT_SECRET, env_1.default.GOOGLE_REDIRECT_URI);
-            oauth2Client.setCredentials({
-                refresh_token: token,
-            });
+            const oauth2Client = this.createOAuth2Client(token);
             const mybusiness = googleapis_1.google.mybusinessbusinessinformation("v1");
             const mybusinessaccountmanagement = googleapis_1.google.mybusinessaccountmanagement("v1");
             const accountsResponse = await mybusinessaccountmanagement.accounts.list({

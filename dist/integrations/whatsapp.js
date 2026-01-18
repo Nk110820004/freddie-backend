@@ -7,6 +7,52 @@ exports.whatsappService = exports.WhatsAppService = void 0;
 const axios_1 = __importDefault(require("axios"));
 const env_1 = __importDefault(require("../config/env"));
 const logger_1 = require("../utils/logger");
+/**
+ * ============================================================
+ * TEMPLATE-ONLY WHATSAPP POLICY (ENFORCED)
+ * ============================================================
+ * Requirement:
+ * ✅ WhatsApp ONLY template messages must be sent.
+ *
+ * So:
+ * - sendTemplate() is allowed
+ * - sendText() is DISABLED
+ * - Alerts/reminders/escalations are template-based
+ *
+ * You must create + approve these templates in WhatsApp Manager:
+ *
+ * 1) freddie_low_rating_review_v1 (en_US)
+ *    Body:
+ *    ⚠️ New low rating Google review
+ *    Outlet: {{1}}
+ *    Rating: {{2}}
+ *    Customer: {{3}}
+ *    Review: {{4}}
+ *    Suggested reply: {{5}}
+ *
+ * 2) freddie_manual_review_reminder_v1 (en_US)
+ *    Body:
+ *    ⏰ Reminder: Google review reply pending
+ *    Outlet: {{1}}
+ *    Rating: {{2}}
+ *    Customer: {{3}}
+ *    Reminder #: {{4}}
+ *
+ * 3) freddie_review_escalation_v1 (en_US)
+ *    Body:
+ *    🚨 Escalated: Review response overdue
+ *    Outlet: {{1}}
+ *    Rating: {{2}}
+ *    Customer: {{3}}
+ *    Pending hours: {{4}}
+ *
+ * NOTE:
+ * These template names are hardcoded so your system is stable.
+ */
+const WA_LANG = "en_US";
+const WA_TPL_LOW_RATING = "freddie_low_rating_review_v1";
+const WA_TPL_REMINDER = "freddie_manual_review_reminder_v1";
+const WA_TPL_ESCALATION = "freddie_review_escalation_v1";
 class WhatsAppService {
     constructor() {
         this.baseUrl = "https://graph.facebook.com/v18.0";
@@ -20,9 +66,9 @@ class WhatsAppService {
      */
     checkRateLimit(phoneNumber) {
         const now = Date.now();
-        const oneHourAgo = now - (60 * 60 * 1000);
+        const oneHourAgo = now - 60 * 60 * 1000;
         let timestamps = this.rateLimitMap.get(phoneNumber) || [];
-        timestamps = timestamps.filter(ts => ts > oneHourAgo);
+        timestamps = timestamps.filter((ts) => ts > oneHourAgo);
         if (timestamps.length >= this.MAX_MESSAGES_PER_HOUR) {
             logger_1.logger.warn(`Rate limit exceeded for ${phoneNumber}: ${timestamps.length} messages in last hour`);
             return false;
@@ -34,19 +80,13 @@ class WhatsAppService {
     /**
      * Validate phone number is 1:1 (not group)
      * WhatsApp Business API only supports 1:1 messaging
-     * Group messaging is NOT supported and should be explicitly forbidden
      */
     validatePhoneNumber(phoneNumber) {
-        // Normalize: remove all non-digits
         const normalized = phoneNumber.replace(/\D/g, "");
-        // WhatsApp groups have special format (e.g., "123-456@g.us")
-        // Business API only allows individual numbers (e.g., "123456789@s.whatsapp.net")
-        // Our system should only store and use individual phone numbers
         if (phoneNumber.includes("@g.us")) {
             logger_1.logger.error(`Group messaging is NOT supported: ${phoneNumber}`);
             return false;
         }
-        // Basic validation: should be 7-15 digits (international standard)
         if (normalized.length < 7 || normalized.length > 15) {
             logger_1.logger.warn(`Invalid phone number length: ${normalized.length}`);
             return false;
@@ -57,7 +97,7 @@ class WhatsAppService {
      * Send a WhatsApp message using template
      * Note: Templates must be pre-approved in WhatsApp Business Manager
      */
-    async sendTemplate(toNumber, templateName, parameters) {
+    async sendTemplate(toNumber, templateName, languageCode = WA_LANG, parameters) {
         try {
             if (!process.env.WHATSAPP_ACCESS_TOKEN) {
                 logger_1.logger.warn("WhatsApp disabled: missing access token");
@@ -67,11 +107,9 @@ class WhatsAppService {
                 logger_1.logger.warn("WhatsApp credentials not configured");
                 return { ok: false, skipped: true };
             }
-            // CRITICAL: Validate this is not a group
             if (!this.validatePhoneNumber(toNumber)) {
                 return { ok: false };
             }
-            // Check rate limit
             if (!this.checkRateLimit(toNumber)) {
                 return { ok: false };
             }
@@ -79,7 +117,7 @@ class WhatsAppService {
             if (parameters && parameters.length > 0) {
                 components.push({
                     type: "body",
-                    parameters: parameters.map((text) => ({ type: "text", text })),
+                    parameters: parameters.map((text) => ({ type: "text", text: String(text ?? "") })),
                 });
             }
             const payload = {
@@ -89,7 +127,7 @@ class WhatsAppService {
                 template: {
                     name: templateName,
                     language: {
-                        code: "en_US",
+                        code: languageCode,
                     },
                     components: components.length > 0 ? components : undefined,
                 },
@@ -112,92 +150,66 @@ class WhatsAppService {
         }
     }
     /**
-     * Send a text message (requires active 24-hour session window)
-     * For notifications, use templates instead
-     * CRITICAL: This is 1:1 only - group messaging is explicitly forbidden
+     * ❌ DISABLED: Text messages not allowed by business requirement
      */
-    async sendText(toNumber, message) {
-        try {
-            if (!process.env.WHATSAPP_ACCESS_TOKEN) {
-                logger_1.logger.warn("WhatsApp disabled: missing access token");
-                return { ok: false, skipped: true };
-            }
-            if (!this.accessToken || !this.phoneNumberId) {
-                logger_1.logger.warn("WhatsApp credentials not configured");
-                return { ok: false, skipped: true };
-            }
-            // CRITICAL: Validate this is not a group
-            if (!this.validatePhoneNumber(toNumber)) {
-                return { ok: false };
-            }
-            // Check rate limit
-            if (!this.checkRateLimit(toNumber)) {
-                return { ok: false };
-            }
-            const payload = {
-                messaging_product: "whatsapp",
-                to: toNumber.replace(/\D/g, ""),
-                type: "text",
-                text: {
-                    body: message,
-                },
-            };
-            const response = await axios_1.default.post(`${this.baseUrl}/${this.phoneNumberId}/messages`, payload, {
-                headers: {
-                    Authorization: `Bearer ${this.accessToken}`,
-                    "Content-Type": "application/json",
-                },
-            });
-            logger_1.logger.info(`WhatsApp text sent to ${toNumber}`, {
-                messageId: response.data?.messages?.[0]?.id,
-            });
-            return { ok: true };
-        }
-        catch (error) {
-            logger_1.logger.error(`Failed to send WhatsApp text to ${toNumber}`, error);
-            return { ok: false };
-        }
+    async sendText() {
+        throw new Error("WhatsAppService.sendText() is disabled. Use template messages only via sendTemplate().");
     }
     /**
-     * Send critical review alert (1-3 stars)
+     * ✅ Critical review alert (1-3 stars) -> Template ONLY
+     *
+     * Template: freddie_low_rating_review_v1
+     * Params:
+     *  {{1}} outletName
+     *  {{2}} rating
+     *  {{3}} customerName
+     *  {{4}} reviewText
+     *  {{5}} suggestedReply
      */
-    async sendCriticalReviewAlert(toNumber, outletName, rating, customerName, reviewText) {
-        const message = `CRITICAL REVIEW ALERT
-
-Outlet: ${outletName}
-Rating: ${rating} star${rating !== 1 ? "s" : ""}
-Customer: ${customerName}
-Review: "${reviewText.substring(0, 200)}${reviewText.length > 200 ? "..." : ""}"
-
-ACTION REQUIRED: Manual reply needed. Login to the admin dashboard to respond.`;
-        return this.sendText(toNumber, message);
+    async sendCriticalReviewAlert(toNumber, outletName, rating, customerName, reviewText, suggestedReply) {
+        return this.sendTemplate(toNumber, WA_TPL_LOW_RATING, WA_LANG, [
+            outletName,
+            `${rating} star${rating !== 1 ? "s" : ""}`,
+            customerName,
+            (reviewText || "(no message)").substring(0, 250),
+            (suggestedReply || "").substring(0, 300),
+        ]);
     }
     /**
-     * Send reminder for pending manual review
+     * ✅ Manual review reminder -> Template ONLY
+     *
+     * Template: freddie_manual_review_reminder_v1
+     * Params:
+     *  {{1}} outletName
+     *  {{2}} rating
+     *  {{3}} customerName
+     *  {{4}} reminderNumber
      */
     async sendManualReviewReminder(toNumber, outletName, customerName, rating, reminderNumber) {
-        const message = `REMINDER #${reminderNumber} - Pending Review Reply
-
-Outlet: ${outletName}
-Customer: ${customerName}
-Rating: ${rating} star${rating !== 1 ? "s" : ""}
-
-This review still requires your manual response. Please login to the dashboard to reply.`;
-        return this.sendText(toNumber, message);
+        return this.sendTemplate(toNumber, WA_TPL_REMINDER, WA_LANG, [
+            outletName,
+            `${rating} star${rating !== 1 ? "s" : ""}`,
+            customerName,
+            String(reminderNumber),
+        ]);
     }
     /**
-     * Send escalation notice
+     * ✅ Escalation notice -> Template ONLY
+     *
+     * Template: freddie_review_escalation_v1
+     * Params:
+     *  {{1}} outletName
+     *  {{2}} rating
+     *  {{3}} customerName
+     *  {{4}} hoursPending
      */
     async sendEscalationNotice(toNumber, outletName, customerName, rating, hoursPending) {
-        const message = `ESCALATED - Review Response Overdue
-
-Outlet: ${outletName}
-Customer: ${customerName}
-Rating: ${rating} stars
-Pending for: ${hoursPending} hours
-
-URGENT: This review has been escalated due to no response. Immediate action required.`;
-        return this.sendText(toNumber, message);
+        return this.sendTemplate(toNumber, WA_TPL_ESCALATION, WA_LANG, [
+            outletName,
+            `${rating} star${rating !== 1 ? "s" : ""}`,
+            customerName,
+            String(hoursPending),
+        ]);
     }
     /**
      * Verify webhook token
@@ -206,10 +218,13 @@ URGENT: This review has been escalated due to no response. Immediate action requ
         return token === env_1.default.WHATSAPP_VERIFY_TOKEN;
     }
     /**
-     * Send multiple admins notification
+     * Send multiple admins notification -> Template ONLY
+     *
+     * ✅ You can re-use reminder or escalation templates.
+     * If you want custom admin template, create a new template and call sendTemplate().
      */
-    async notifyAdmins(adminNumbers, message) {
-        const promises = adminNumbers.map((number) => this.sendText(number, message));
+    async notifyAdmins(adminNumbers, templateName, params) {
+        const promises = adminNumbers.map((number) => this.sendTemplate(number, templateName, WA_LANG, params));
         await Promise.allSettled(promises);
     }
 }

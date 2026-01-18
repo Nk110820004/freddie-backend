@@ -285,7 +285,7 @@ class UserController {
             const updated = await users_repo_1.usersRepository.updateUser(userId, {
                 whatsappNumber: phoneNumber,
             });
-            const sent = await whatsapp_1.whatsappService.sendText(phoneNumber, "Your WhatsApp number has been connected to the app");
+            const sent = await whatsapp_1.whatsappService.sendTemplate(phoneNumber, "freddie_manual_review_reminder_v1", "en_US", ["System", "N/A", "System", "Welcome! Your WhatsApp number has been connected."]);
             if (!sent.ok) {
                 res.status(500).json({ error: "Failed to send test WhatsApp message; check integration credentials" });
                 return;

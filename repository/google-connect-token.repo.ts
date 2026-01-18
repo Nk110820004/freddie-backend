@@ -6,9 +6,11 @@ export class GoogleConnectTokenRepository {
    * Create a new connect token
    */
   async create(data: {
-    outletId: string;
+    outletId?: string;
+    userId?: string;
     token: string;
     expiresAt: Date;
+    lastSentAt?: Date;
   }): Promise<GoogleConnectToken> {
     return prisma.googleConnectToken.create({
       data
@@ -21,7 +23,27 @@ export class GoogleConnectTokenRepository {
   async findByToken(token: string): Promise<GoogleConnectToken | null> {
     return prisma.googleConnectToken.findUnique({
       where: { token },
-      include: { outlet: true }
+      include: { outlet: true, user: true }
+    });
+  }
+
+  /**
+   * Find latest token for a user
+   */
+  async findLatestByUserId(userId: string): Promise<GoogleConnectToken | null> {
+    return prisma.googleConnectToken.findFirst({
+      where: { userId },
+      orderBy: { createdAt: 'desc' }
+    });
+  }
+
+  /**
+   * Update last sent at
+   */
+  async updateLastSentAt(token: string): Promise<GoogleConnectToken> {
+    return prisma.googleConnectToken.update({
+      where: { token },
+      data: { lastSentAt: new Date() }
     });
   }
 

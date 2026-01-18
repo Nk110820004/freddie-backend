@@ -16,6 +16,43 @@ let intervalHandle = null;
 let lastFetchTime = null;
 const outletRepo = outlets_repo_1.outletsRepository;
 const manualQueueRepo = new manual_review_queue_repo_1.ManualReviewQueueRepository(database_1.prisma);
+/**
+ * ============================================================
+ * WhatsApp Templates (HARD-CODED)
+ * ============================================================
+ * You asked: WhatsApp ONLY template messages must be sent.
+ *
+ * ✅ Create these templates in Meta WhatsApp Manager:
+ *
+ * 1) Template Name: freddie_low_rating_review_v1
+ *    Language: en_US
+ *    Body:
+ *    ⚠️ New low rating Google review
+ *
+ *    Outlet: {{1}}
+ *    Rating: {{2}}
+ *    Customer: {{3}}
+ *    Review: {{4}}
+ *
+ *    Suggested reply:
+ *    {{5}}
+ *
+ *
+ * 2) Template Name: freddie_manual_review_reminder_v1
+ *    Language: en_US
+ *    Body:
+ *    ⏰ Reminder: Google review response pending
+ *
+ *    Outlet: {{1}}
+ *    Rating: {{2}}
+ *    Customer: {{3}}
+ *    Reminder #: {{4}}
+ *
+ *    Please respond in the dashboard.
+ */
+const WA_TPL_LOW_RATING = "freddie_low_rating_review_v1";
+const WA_TPL_REMINDER = "freddie_manual_review_reminder_v1";
+const WA_LANG = "en_US";
 //
 // -------------- MAIN PERIODIC BATCH ----------------
 //
@@ -43,10 +80,10 @@ async function fetchAndProcessGMBReviews() {
         include: {
             user: {
                 select: {
-                    googleRefreshToken: true,
                     whatsappNumber: true,
                 },
             },
+            googleIntegration: true,
         },
     });
     // CRITICAL: Filter by strict eligibility criteria before polling
@@ -60,11 +97,11 @@ async function fetchAndProcessGMBReviews() {
     logger_1.logger.info(`Automation: ${eligibleOutlets.length}/${allOutlets.length} outlets eligible for polling`);
     for (const outlet of eligibleOutlets) {
         try {
-            if (!outlet.user?.googleRefreshToken || !outlet.googleLocationName) {
+            if (!outlet.googleIntegration?.refreshToken || !outlet.googleLocationName) {
                 logger_1.logger.warn(`Outlet ${outlet.id} missing GMB auth setup`);
                 continue;
             }
-            const newReviews = await gmb_1.gmbService.fetchReviews(outlet.googleLocationName, lastFetchTime ?? undefined);
+            const newReviews = await gmb_1.gmbService.fetchReviews(outlet.googleLocationName, outlet.googleIntegration.refreshToken, lastFetchTime ?? undefined);
             if (!newReviews?.length) {
                 logger_1.logger.debug(`No new reviews for outlet ${outlet.id}`);
                 continue;
@@ -84,9 +121,15 @@ async function fetchAndProcessGMBReviews() {
 //
 async function processSingleReview(gmbReview, outlet) {
     const rating = gmb_1.gmbService.ratingToNumber(gmbReview.starRating);
+    // ✅ SAFETY: If already replied in Google, skip fully
+    // (Prevents auto-reply duplicates if manual reply already exists)
+    if (gmbReview?.reviewReply?.comment) {
+        logger_1.logger.info(`Skipping review ${gmbReview.reviewId} (already has Google reply)`);
+        return;
+    }
     // idempotency on googleReviewId
     const exists = await database_1.prisma.review.findFirst({
-        where: { googleReviewId: gmbReview.reviewId }
+        where: { googleReviewId: gmbReview.reviewId },
     });
     if (exists) {
         logger_1.logger.info(`Review ${gmbReview.reviewId} already processed`);
@@ -96,16 +139,18 @@ async function processSingleReview(gmbReview, outlet) {
         const review = await reviews_repo_1.reviewsRepository.createReview({
             outletId: outlet.id,
             rating,
-            customerName: gmbReview.reviewer.displayName,
-            reviewText: gmbReview.comment ?? "",
-            googleReviewId: gmbReview.reviewId
+            customerName: gmbReview?.reviewer?.displayName ?? "Customer",
+            reviewText: gmbReview?.comment ?? "",
+            googleReviewId: gmbReview.reviewId,
         });
         // Initialize workflow
         await review_workflow_repo_1.reviewWorkflowRepository.createIfNotExists(review.id);
         if (rating >= 4) {
+            // 4-5 stars: OpenAI reply directly in Google Reviews
             await handlePositiveReview(review, outlet, tx);
         }
         else {
+            // <4 stars: WhatsApp template message sent
             await handleCriticalReview(review, outlet, tx);
         }
     });
@@ -116,37 +161,38 @@ async function processSingleReview(gmbReview, outlet) {
 async function handlePositiveReview(review, outlet, tx) {
     try {
         logger_1.logger.info(`Auto-handling positive review ${review.id}`);
-        const aiReply = await openai_1.openaiService.generateReply(review.reviewText, review.rating, outlet.name);
+        const aiReply = await openai_1.openaiService.generateReply({
+            rating: review.rating,
+            customerName: review.customerName,
+            reviewText: review.reviewText,
+            outletName: outlet.name,
+            storeLocation: outlet.name, // if you have outlet.city/address use it here
+            businessCategory: outlet.category,
+        });
         if (!aiReply) {
             logger_1.logger.error(`AI reply generation failed for review ${review.id}`);
             return;
         }
+        // mark workflow state
         await reviews_repo_1.reviewsRepository.markAsAutoReplied(review.id, aiReply);
         await review_workflow_repo_1.reviewWorkflowRepository.updateState(review.id, review_workflow_repo_1.ReviewWorkflowState.AUTO_REPLIED, tx);
-        const posted = await gmb_1.gmbService.postReply(outlet.googleLocationName, review.googleReviewId, aiReply, outlet.user.googleRefreshToken);
+        // ✅ post reply directly in Google Reviews
+        const posted = await gmb_1.gmbService.postReply(outlet.googleLocationName, review.googleReviewId, aiReply, outlet.googleIntegration.refreshToken);
         if (!posted) {
             logger_1.logger.error(`Failed to post AI reply for review ${review.id}`);
             return;
         }
         await reviews_repo_1.reviewsRepository.markAsClosed(review.id);
         await review_workflow_repo_1.reviewWorkflowRepository.complete(review.id);
-        if (outlet.user?.whatsappNumber) {
-            await whatsapp_1.whatsappService.sendText(outlet.user.whatsappNumber, `✨ *Positive review auto-replied*
-
-Outlet: ${outlet.name}
-Rating: ${review.rating}⭐
-Customer: ${review.customerName}
-
-Reply sent:
-"${aiReply}"`);
-        }
+        // ✅ IMPORTANT: You requested WhatsApp only for 1-3 ratings.
+        // So no WhatsApp message for positive reviews.
     }
     catch (err) {
         logger_1.logger.error(`handlePositiveReview failed`, err);
     }
 }
 //
-// -------------- STEP 3: CRITICAL REVIEWS (MANUAL) ----------------
+// -------------- STEP 3: CRITICAL REVIEWS (MANUAL + TEMPLATE WHATSAPP) ----------------
 //
 async function handleCriticalReview(review, outlet, tx) {
     try {
@@ -155,16 +201,24 @@ async function handleCriticalReview(review, outlet, tx) {
         // Calculate first reminder (15 mins from now)
         const firstReminder = new Date(Date.now() + 15 * 60 * 1000);
         await review_workflow_repo_1.reviewWorkflowRepository.moveToManualQueue(review.id, firstReminder, tx);
+        // ✅ Send WhatsApp TEMPLATE ONLY
         if (outlet.user?.whatsappNumber) {
-            await whatsapp_1.whatsappService.sendText(outlet.user.whatsappNumber, `⚠️ *Critical review received*
-
-Outlet: ${outlet.name}
-Rating: ${review.rating}⭐
-Customer: ${review.customerName}
-
-"${review.reviewText}"
-
-Please respond manually.`);
+            // Optional: generate a suggested reply to help owner
+            const suggestedReply = await openai_1.openaiService.generateReply({
+                rating: review.rating,
+                customerName: review.customerName,
+                reviewText: review.reviewText,
+                outletName: outlet.name,
+                storeLocation: outlet.name,
+                businessCategory: outlet.category,
+            });
+            await whatsapp_1.whatsappService.sendTemplate(outlet.user.whatsappNumber, WA_TPL_LOW_RATING, WA_LANG, [
+                outlet.name,
+                `${review.rating}⭐`,
+                review.customerName,
+                review.reviewText?.slice(0, 250) || "(no message)",
+                (suggestedReply || "").slice(0, 300),
+            ]);
         }
     }
     catch (err) {
@@ -172,7 +226,7 @@ Please respond manually.`);
     }
 }
 //
-// -------------- STEP 4: REMINDERS ----------------
+// -------------- STEP 4: REMINDERS (TEMPLATE WHATSAPP ONLY) ----------------
 //
 async function processManualReviewReminders() {
     const due = await manualQueueRepo.getPendingReminders();
@@ -186,7 +240,8 @@ async function processManualReviewReminders() {
                 logger_1.logger.warn(`Workflow not found for review ${item.reviewId}`);
                 continue;
             }
-            if (wf.currentState === review_workflow_repo_1.ReviewWorkflowState.ESCALATED || wf.currentState === review_workflow_repo_1.ReviewWorkflowState.COMPLETED) {
+            if (wf.currentState === review_workflow_repo_1.ReviewWorkflowState.ESCALATED ||
+                wf.currentState === review_workflow_repo_1.ReviewWorkflowState.COMPLETED) {
                 logger_1.logger.debug(`Review ${item.reviewId} already in final state ${wf.currentState}`);
                 continue;
             }
@@ -200,7 +255,13 @@ async function processManualReviewReminders() {
                 }
                 continue;
             }
-            await whatsapp_1.whatsappService.sendText(targetUser.whatsappNumber, `⏰ *Reminder: manual review pending*\n\nOutlet: ${item.review.outlet.name}\nCustomer: ${item.review.customerName}\nRating: ${item.review.rating}⭐\nReminder #${item.reminderCount + 1}\n\nPlease respond to close this review.`);
+            // ✅ WhatsApp TEMPLATE ONLY reminder
+            await whatsapp_1.whatsappService.sendTemplate(targetUser.whatsappNumber, WA_TPL_REMINDER, WA_LANG, [
+                item.review.outlet.name,
+                `${item.review.rating}⭐`,
+                item.review.customerName,
+                String(item.reminderCount + 1),
+            ]);
             const updated = await manualQueueRepo.updateReminderSent(item.id);
             if (updated.status === "ESCALATED") {
                 await review_workflow_repo_1.reviewWorkflowRepository.updateState(item.reviewId, review_workflow_repo_1.ReviewWorkflowState.ESCALATED);
@@ -236,5 +297,4 @@ async function stopAutomation() {
         logger_1.logger.info("Automation worker stopped");
     }
 }
-// -------------- START / STOP ----------------
 //# sourceMappingURL=review-automation.worker.js.map

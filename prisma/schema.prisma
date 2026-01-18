@@ -17,7 +17,7 @@ enum UserRole {
   USER
 }
 
-// <CHANGE> Added new enums for outlet status granularity
+// Outlet status granularity
 enum OutletStatus {
   ACTIVE
   PAUSED
@@ -84,77 +84,87 @@ enum PaymentStatus {
   CANCELLED
 }
 
+// CRITICAL FIX:
+// Workflow state must not reuse ReviewStatus
+// because workflow transitions are guarded separately.
+enum ReviewWorkflowState {
+  PENDING
+  AUTO_REPLIED
+  MANUAL_PENDING
+  COMPLETED
+  ESCALATED
+}
+
 //
 // ========== MODELS ==========
 //
 
 model User {
-  id                String      @id @default(cuid())
-  name              String
-  email             String      @unique
-  passwordHash      String
-  role              UserRole    @default(USER)
+  id                 String   @id @default(cuid())
+  name               String
+  email              String   @unique
+  passwordHash       String
+  role               UserRole @default(USER)
 
-  twoFactorEnabled  Boolean     @default(false)
-  twoFactorSecret   String?
-  twoFactorVerified Boolean     @default(false)
+  twoFactorEnabled    Boolean @default(false)
+  twoFactorSecret     String?
+  twoFactorVerified   Boolean @default(false)
 
-  lastLoginAt       DateTime?
-  lastLoginIp       String?
+  lastLoginAt         DateTime?
+  lastLoginIp         String?
 
-  phoneNumber       String?     // WhatsApp phone
-  googleEmail       String?     // Gmail for OAuth
-  googleProfileId   String?     // Google account ID
-  googleRefreshToken String?    // Google refresh token for API access
-  gmbAccountId      String?     // Google Business Profile account ID
-  whatsappNumber    String?     // For receiving WhatsApp alerts
+  phoneNumber         String? // WhatsApp phone
+  googleEmail         String? // Gmail for OAuth
+  googleProfileId     String? // Google account ID
+  googleRefreshToken  String? // Google refresh token for API access
+  gmbAccountId        String? // Google Business Profile account ID
+  whatsappNumber      String? // For receiving WhatsApp alerts
 
-  createdAt         DateTime    @default(now())
-  updatedAt         DateTime    @updatedAt
-  deletedAt         DateTime?
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+  deletedAt           DateTime?
 
   // relations
-  outlets           Outlet[]
-  auditLogs         AuditLog[]
-  apiKeys           ApiKey[]
-  refreshTokens     RefreshToken[]
-  payments          Payment[]
-  subscriptionAudits SubscriptionAuditLog[]
+  outlets              Outlet[]
+  auditLogs            AuditLog[]
+  apiKeys              ApiKey[]
+  refreshTokens        RefreshToken[]
+  payments             Payment[]
+  subscriptionAudits   SubscriptionAuditLog[]
   assignedManualReviews ManualReviewQueue[]
+  googleConnectTokens   GoogleConnectToken[]
 
   @@index([email])
   @@index([role])
   @@index([deletedAt])
 }
 
-// <CHANGE> Enhanced Outlet model with required business fields
 model Outlet {
-  id                    String              @id @default(cuid())
+  id                    String           @id @default(cuid())
   name                  String
-  groupName             String?             // outlet group name
-  primaryContactName    String              // required for onboarding
-  contactEmail          String              @unique // required, unique
-  contactPhone          String              @unique // required, unique
-  
-  category              BusinessCategory    @default(OTHER)
-  subscriptionPlan      SubscriptionPlan    @default(MONTHLY)
-  
-  // Status fields with granular control
-  subscriptionStatus    SubscriptionStatus  @default(TRIAL)
-  apiStatus             ApiStatus           @default(DISABLED)
-  onboardingStatus      OnboardingStatus    @default(PENDING)
-  status                OutletStatus        @default(ACTIVE) // legacy field
+  groupName             String?
+  primaryContactName    String
+  contactEmail          String           @unique
+  contactPhone          String           @unique
+
+  category              BusinessCategory @default(OTHER)
+  subscriptionPlan      SubscriptionPlan @default(MONTHLY)
+
+  subscriptionStatus    SubscriptionStatus @default(TRIAL)
+  apiStatus             ApiStatus          @default(DISABLED)
+  onboardingStatus      OnboardingStatus   @default(PENDING)
+  status                OutletStatus       @default(ACTIVE)
 
   googlePlaceId         String?
   googleLocationName    String?
   googleConnected       Boolean            @default(false)
 
-  createdAt             DateTime            @default(now())
-  updatedAt             DateTime            @updatedAt
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
 
   // owner
   userId                String
-  user                  User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user                  User              @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   // relations
   reviews               Review[]
@@ -174,54 +184,56 @@ model Outlet {
   @@index([onboardingStatus])
 }
 
-// <CHANGE> Updated Review model with new statuses
 model Review {
-  id                String              @id @default(cuid())
-  googleReviewId    String?             // GMB review ID
-  rating            Int
-  customerName      String
-  reviewText        String
-  aiReplyText       String?             // renamed for clarity
-  manualReplyText   String?             // renamed for clarity
-  status            ReviewStatus        @default(PENDING)
-  platform          String              @default("GMB") // always GMB
+  id              String      @id @default(cuid())
 
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
+  // RECOMMENDED:
+  // Uniqueness guarantees idempotency at DB level.
+  // Prevents duplicate review ingestion.
+  googleReviewId  String?     @unique
 
-  outletId          String
-  outlet            Outlet              @relation(fields: [outletId], references: [id], onDelete: Cascade)
+  rating          Int
+  customerName    String
+  reviewText      String
+  aiReplyText     String?
+  manualReplyText String?
+  status          ReviewStatus @default(PENDING)
+  platform        String       @default("GMB")
 
-  auditLogs         AuditLog[]
-  manualQueue       ManualReviewQueue?
-  reviewWorkflow    ReviewWorkflow?
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+
+  outletId        String
+  outlet          Outlet       @relation(fields: [outletId], references: [id], onDelete: Cascade)
+
+  auditLogs       AuditLog[]
+  manualQueue     ManualReviewQueue?
+  reviewWorkflow  ReviewWorkflow?
 
   @@index([outletId])
   @@index([status])
   @@index([rating])
   @@index([createdAt])
-  @@index([googleReviewId])
 }
 
-// <CHANGE> New table for manual review queue (ratings 1-3)
 model ManualReviewQueue {
-  id                String              @id @default(cuid())
-  
-  reviewId          String              @unique
-  review            Review              @relation(fields: [reviewId], references: [id], onDelete: Cascade)
-  
-  outletId          String
-  outlet            Outlet              @relation(fields: [outletId], references: [id], onDelete: Cascade)
-  
-  assignedAdminId   String?
-  assignedAdmin     User?               @relation(fields: [assignedAdminId], references: [id], onDelete: SetNull)
-  
-  reminderCount     Int                 @default(0)
-  nextReminderAt    DateTime?
-  status            ManualQueueStatus   @default(PENDING)
-  
-  createdAt         DateTime            @default(now())
-  updatedAt         DateTime            @updatedAt
+  id              String            @id @default(cuid())
+
+  reviewId         String            @unique
+  review           Review            @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+
+  outletId         String
+  outlet           Outlet            @relation(fields: [outletId], references: [id], onDelete: Cascade)
+
+  assignedAdminId  String?
+  assignedAdmin    User?             @relation(fields: [assignedAdminId], references: [id], onDelete: SetNull)
+
+  reminderCount    Int               @default(0)
+  nextReminderAt   DateTime?
+  status           ManualQueueStatus @default(PENDING)
+
+  createdAt        DateTime          @default(now())
+  updatedAt        DateTime          @updatedAt
 
   @@index([reviewId])
   @@index([outletId])
@@ -231,35 +243,35 @@ model ManualReviewQueue {
 }
 
 model Billing {
-  id            String       @id @default(cuid())
-  status        SubscriptionStatus @default(TRIAL)
-  trialEndsAt   DateTime?
-  paidUntil     DateTime?
+  id          String             @id @default(cuid())
+  status      SubscriptionStatus @default(TRIAL)
+  trialEndsAt DateTime?
+  paidUntil   DateTime?
 
-  createdAt     DateTime     @default(now())
-  updatedAt     DateTime     @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  outletId      String       @unique
-  outlet        Outlet       @relation(fields: [outletId], references: [id], onDelete: Cascade)
+  outletId    String  @unique
+  outlet      Outlet  @relation(fields: [outletId], references: [id], onDelete: Cascade)
 
-  payments      Payment[]
+  payments    Payment[]
 
   @@index([status])
 }
 
 model ApiKey {
-  id            String     @id @default(cuid())
-  keyHash       String     @unique
-  expiresAt     DateTime
-  isActive      Boolean    @default(true)
-  lastUsedAt    DateTime?
-  createdAt     DateTime   @default(now())
+  id        String   @id @default(cuid())
+  keyHash   String   @unique
+  expiresAt DateTime
+  isActive  Boolean  @default(true)
+  lastUsedAt DateTime?
+  createdAt DateTime @default(now())
 
-  userId        String
-  user          User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  outletId      String
-  outlet        Outlet     @relation(fields: [outletId], references: [id], onDelete: Cascade)
+  outletId  String
+  outlet    Outlet   @relation(fields: [outletId], references: [id], onDelete: Cascade)
 
   @@index([userId])
   @@index([outletId])
@@ -267,23 +279,23 @@ model ApiKey {
 }
 
 model AuditLog {
-  id          String    @id @default(cuid())
-  action      String
-  entity      String
-  entityId    String
-  details     String?
-  ip          String?
-  userAgent   String?
-  createdAt   DateTime  @default(now())
+  id        String   @id @default(cuid())
+  action    String
+  entity    String
+  entityId  String
+  details   String?
+  ip        String?
+  userAgent String?
+  createdAt DateTime @default(now())
 
-  userId      String
-  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  outletId    String?
-  outlet      Outlet?   @relation(fields: [outletId], references: [id], onDelete: SetNull)
+  outletId  String?
+  outlet    Outlet?  @relation(fields: [outletId], references: [id], onDelete: SetNull)
 
-  reviewId    String?
-  review      Review?   @relation(fields: [reviewId], references: [id], onDelete: SetNull)
+  reviewId  String?
+  review    Review?  @relation(fields: [reviewId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([action])
@@ -291,22 +303,21 @@ model AuditLog {
   @@index([createdAt])
 }
 
-// <CHANGE> New table for subscription audit trail
 model SubscriptionAuditLog {
-  id          String    @id @default(cuid())
-  
-  outletId    String
-  outlet      Outlet    @relation(fields: [outletId], references: [id], onDelete: Cascade)
-  
-  adminId     String
-  admin       User      @relation(fields: [adminId], references: [id], onDelete: Cascade)
-  
-  action      String    // MANUAL_PAYMENT_UPDATE, SUBSCRIPTION_STATUS_CHANGE, etc
-  oldValue    String?
-  newValue    String?
-  remarks     String?
-  
-  createdAt   DateTime  @default(now())
+  id        String   @id @default(cuid())
+
+  outletId  String
+  outlet    Outlet   @relation(fields: [outletId], references: [id], onDelete: Cascade)
+
+  adminId   String
+  admin     User     @relation(fields: [adminId], references: [id], onDelete: Cascade)
+
+  action    String
+  oldValue  String?
+  newValue  String?
+  remarks   String?
+
+  createdAt DateTime @default(now())
 
   @@index([outletId])
   @@index([adminId])
@@ -315,39 +326,39 @@ model SubscriptionAuditLog {
 }
 
 model IpAllowlist {
-  id          String    @id @default(cuid())
-  ip          String    @unique
+  id          String  @id @default(cuid())
+  ip          String  @unique
   description String?
-  isActive    Boolean   @default(true)
+  isActive    Boolean @default(true)
 
-  createdAt   DateTime  @default(now())
-  updatedAt   DateTime  @updatedAt
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@index([ip])
   @@index([isActive])
 }
 
 model Payment {
-  id                String         @id @default(cuid())
-  razorpayOrderId   String         @unique
-  razorpayPaymentId String?        @unique
-  amount            Int            // in paise
-  currency          String         @default("INR")
-  status            PaymentStatus  @default(PENDING)
-  
+  id                String        @id @default(cuid())
+  razorpayOrderId   String        @unique
+  razorpayPaymentId String?       @unique
+  amount            Int
+  currency          String        @default("INR")
+  status            PaymentStatus @default(PENDING)
+
   planType          SubscriptionPlan
-  
-  createdAt         DateTime       @default(now())
-  updatedAt         DateTime       @updatedAt
-  
+
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
   userId            String
-  user              User           @relation(fields: [userId], references: [id], onDelete: Cascade)
-  
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
   outletId          String
-  outlet            Outlet         @relation(fields: [outletId], references: [id], onDelete: Cascade)
-  
+  outlet            Outlet   @relation(fields: [outletId], references: [id], onDelete: Cascade)
+
   billingId         String?
-  billing           Billing?       @relation(fields: [billingId], references: [id], onDelete: SetNull)
+  billing           Billing? @relation(fields: [billingId], references: [id], onDelete: SetNull)
 
   @@index([userId])
   @@index([outletId])
@@ -356,29 +367,34 @@ model Payment {
 }
 
 model RefreshToken {
-  id         String   @id @default(cuid())
-  tokenHash  String   @unique
-  userId     String
-  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
-  expiresAt  DateTime
-  createdAt  DateTime @default(now())
+  id        String   @id @default(cuid())
+  tokenHash String   @unique
+
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  expiresAt DateTime
+  createdAt DateTime @default(now())
 
   @@index([userId])
   @@index([expiresAt])
 }
+
 model ReviewWorkflow {
-  reviewId        String      @id
-  review          Review      @relation(fields: [reviewId], references: [id], onDelete: Cascade)
+  reviewId       String             @id
+  review         Review              @relation(fields: [reviewId], references: [id], onDelete: Cascade)
 
-  currentState    ReviewStatus
-  reminderCount   Int         @default(0)
+  // CRITICAL FIX:
+  // Use ReviewWorkflowState enum (not ReviewStatus)
+  currentState   ReviewWorkflowState
+  reminderCount  Int                @default(0)
 
-  lastActionAt    DateTime    @default(now())
-  lastReminderAt  DateTime?
-  nextReminderAt  DateTime?
+  lastActionAt   DateTime           @default(now())
+  lastReminderAt DateTime?
+  nextReminderAt DateTime?
 
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
+  createdAt      DateTime           @default(now())
+  updatedAt      DateTime           @updatedAt
 
   @@index([currentState])
   @@index([nextReminderAt])
@@ -387,26 +403,33 @@ model ReviewWorkflow {
 // Google Connect Tokens for outlet-specific Google OAuth flow
 model GoogleConnectToken {
   id        String   @id @default(cuid())
-  outletId  String
-  outlet    Outlet   @relation(fields: [outletId], references: [id], onDelete: Cascade)
-  token     String   @unique // Random string for URL
+  outletId  String?
+  outlet    Outlet?  @relation(fields: [outletId], references: [id], onDelete: Cascade)
+
+  userId    String?
+  user      User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  token     String   @unique
   expiresAt DateTime
   usedAt    DateTime?
+  lastSentAt DateTime?
   createdAt DateTime @default(now())
 
   @@index([token])
   @@index([outletId])
+  @@index([userId])
   @@index([expiresAt])
 }
 
 // Google Business Profile integrations per outlet
 model GoogleIntegration {
-  id            String   @id @default(cuid())
-  outletId      String   @unique
-  outlet        Outlet   @relation(fields: [outletId], references: [id], onDelete: Cascade)
-  googleEmail   String
-  refreshToken  String
-  connectedAt   DateTime @default(now())
+  id           String   @id @default(cuid())
+  outletId     String   @unique
+  outlet       Outlet   @relation(fields: [outletId], references: [id], onDelete: Cascade)
+
+  googleEmail  String
+  refreshToken String
+  connectedAt  DateTime @default(now())
 
   @@index([outletId])
 }

@@ -30,5 +30,9 @@ router.post("/reviews/:reviewId/manual-reply", (req, res) => admin_controller_1.
 router.post("/outlets/:outletId/google/connect-link", (req, res) => admin_controller_1.adminController.generateGoogleConnectLink(req, res));
 router.get("/outlets/:outletId/google/locations", (req, res) => integrations_controller_1.integrationsController.getGMBLocationsForOutlet(req, res));
 router.post("/outlets/:outletId/google/link-location", (req, res) => admin_controller_1.adminController.linkGoogleLocation(req, res));
+// Onboarding Wizard Routes
+router.post("/onboarding/send-connect-link", (req, res) => admin_controller_1.adminController.sendGoogleConnectLink(req, res));
+router.get("/onboarding/user/:userId/locations", (req, res) => admin_controller_1.adminController.getLocationsForUser(req, res));
+router.post("/onboarding/enable-outlets", (req, res) => admin_controller_1.adminController.enableOutletsBulk(req, res));
 exports.default = router;
 //# sourceMappingURL=admin.routes.js.map

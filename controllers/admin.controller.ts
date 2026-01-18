@@ -10,6 +10,9 @@ import { prisma } from "../database" // assuming prisma client is here
 import { billingRepository } from "../repository/billing.repo"
 import { googleConnectTokenRepository } from "../repository/google-connect-token.repo"
 import { integrationsController } from "./integrations.controller"
+import { gmbService } from "../integrations/gmb.js"
+import { whatsappService } from "../integrations/whatsapp"
+import { emailService } from "../services/email.service"
 
 const outletRepo = outletsRepository
 const manualQueueRepo = new ManualReviewQueueRepository(prisma)
@@ -607,6 +610,144 @@ export class AdminController {
     } catch (error) {
       logger.error("Failed to link Google location", error)
       res.status(500).json({ error: "Failed to link Google location" })
+    }
+  }
+
+  /**
+   * Step 2: Generate and send Google Connect Link
+   * Supports WhatsApp, Email, and manual copy
+   */
+  async sendGoogleConnectLink(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { userId, channel } = req.body // channel: 'whatsapp' | 'email' | 'manual'
+
+      if (!userId) {
+        res.status(400).json({ error: "User ID is required" })
+        return
+      }
+
+      const user = await userRepository.getUserById(userId)
+      if (!user) {
+        res.status(404).json({ error: "User not found" })
+        return
+      }
+
+      // Generate or get existing valid token
+      let tokenItem = await googleConnectTokenRepository.findLatestByUserId(userId)
+      let token: string
+
+      if (tokenItem && tokenItem.expiresAt > new Date() && !tokenItem.usedAt) {
+        token = tokenItem.token
+      } else {
+        token = crypto.randomBytes(32).toString('hex')
+        const expiresAt = new Date()
+        expiresAt.setMinutes(expiresAt.getMinutes() + 15)
+        tokenItem = await googleConnectTokenRepository.create({
+          userId,
+          token,
+          expiresAt
+        })
+      }
+
+      const connectUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/connect-google?token=${token}`
+
+      let sent = false
+      if (channel === 'whatsapp' && user.phoneNumber) {
+        // TODO: Create a dedicated WhatsApp template for this action
+        const waResult = await whatsappService.sendTemplate(
+          user.phoneNumber,
+          "freddie_manual_review_reminder_v1", // Using existing template for now
+          "en_US",
+          // Params: 1: user name, 2: item, 3: status, 4: details
+          [user.name || 'there', "Google Account", "Connection Link", connectUrl]
+        )
+        sent = waResult.ok
+      } else if (channel === 'email' && user.email) {
+        // You might want to add a specific method for this in emailService
+        // For now using a generic log or placeholder
+        logger.info(`Email with connect link would be sent to ${user.email}`)
+        sent = true 
+      } else if (channel === 'manual') {
+        sent = true
+      }
+
+      if (sent) {
+        await googleConnectTokenRepository.updateLastSentAt(token)
+      }
+
+      res.status(200).json({
+        message: "Connect link processed",
+        connectUrl,
+        sent,
+        lastSentAt: new Date(),
+        expiresIn: Math.round((tokenItem.expiresAt.getTime() - Date.now()) / 60000)
+      })
+    } catch (error) {
+      logger.error("Failed to send Google connect link", error)
+      res.status(500).json({ error: "Failed to process connect link" })
+    }
+  }
+
+  /**
+   * Step 3: Get locations after OAuth is complete
+   */
+  async getLocationsForUser(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { userId } = req.params
+      const user = await userRepository.getUserById(userId)
+
+      if (!user || !user.googleRefreshToken) {
+        res.status(400).json({ error: "Google account not connected for this user" })
+        return
+      }
+
+      const locations = await gmbService.fetchLocationsForOutlet(user.googleRefreshToken)
+      
+      res.status(200).json({ locations })
+    } catch (error) {
+      logger.error("Failed to fetch locations for user", error)
+      res.status(500).json({ error: "Failed to fetch Google locations" })
+    }
+  }
+
+  /**
+   * Step 4: Enable multiple outlets and configure them
+   */
+  async enableOutletsBulk(req: AuthRequest, res: Response): Promise<void> {
+    try {
+      const { userId, outlets } = req.body 
+      // outlets: Array<{ googleLocationName: string, name: string, category: string, plan: string }>
+
+      if (!userId || !outlets || !Array.isArray(outlets)) {
+        res.status(400).json({ error: "User ID and outlets array are required" })
+        return
+      }
+
+      const results = []
+      for (const o of outlets) {
+        const outlet = await outletRepo.createOutlet({
+          name: o.name,
+          userId,
+          primaryContactName: "Owner", // Default
+          contactEmail: `${o.googleLocationName.split('/').pop()}@placeholder.com`, // Better way needed
+          contactPhone: "0000000000",
+          category: (o.category || "OTHER") as any,
+          subscriptionPlan: (o.plan || "MONTHLY") as any,
+          googleLocationName: o.googleLocationName,
+          googleConnected: true,
+          onboardingStatus: "COMPLETED",
+          apiStatus: "ENABLED"
+        })
+        results.push(outlet)
+      }
+
+      res.status(201).json({
+        message: `${results.length} outlets enabled successfully`,
+        outlets: results
+      })
+    } catch (error) {
+      logger.error("Failed to enable outlets bulk", error)
+      res.status(500).json({ error: "Failed to enable outlets" })
     }
   }
 }

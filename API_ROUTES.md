@@ -75,6 +75,9 @@ This document lists all available API routes in the Freddie Backend, including t
 | POST | `/api/admin/outlets/:outletId/google/connect-link` | Yes | ADMIN+ | Generate Google connect link for outlet |
 | GET | `/api/admin/outlets/:outletId/google/locations` | Yes | ADMIN+ | Get Google locations for outlet |
 | POST | `/api/admin/outlets/:outletId/google/link-location` | Yes | ADMIN+ | Link Google location to outlet |
+| POST | `/api/admin/onboarding/send-connect-link` | Yes | ADMIN+ | Step 2: Send Google connect link to user |
+| GET | `/api/admin/onboarding/user/:userId/locations` | Yes | ADMIN+ | Step 3: Get Google locations for user after OAuth |
+| POST | `/api/admin/onboarding/enable-outlets` | Yes | ADMIN+ | Step 4: Bulk enable and configure outlets |
 
 ## Admin Users Routes (`/api/admin/users`)
 
@@ -143,6 +146,11 @@ This document lists all available API routes in the Freddie Backend, including t
 | GET | `/api/integrations/google/locations` | Yes | Get GMB locations (legacy) |
 | POST | `/api/integrations/whatsapp/test` | Yes | Send test WhatsApp message |
 | POST | `/api/integrations/openai/generate-reply` | No | Generate AI reply |
+
+## Review Automation Logic
+
+- **4-5 Stars**: OpenAI automatically generates a reply and posts it directly to Google Reviews.
+- **< 4 Stars**: A WhatsApp template message is sent to the outlet owner/admin for manual review.
 
 ## RBAC Routes (`/api/rbac`)
 

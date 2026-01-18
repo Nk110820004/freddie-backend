@@ -45,4 +45,9 @@ router.post("/outlets/:outletId/google/connect-link", (req, res) => adminControl
 router.get("/outlets/:outletId/google/locations", (req, res) => integrationsController.getGMBLocationsForOutlet(req, res))
 router.post("/outlets/:outletId/google/link-location", (req, res) => adminController.linkGoogleLocation(req, res))
 
+// Onboarding Wizard Routes
+router.post("/onboarding/send-connect-link", (req, res) => adminController.sendGoogleConnectLink(req, res))
+router.get("/onboarding/user/:userId/locations", (req, res) => adminController.getLocationsForUser(req, res))
+router.post("/onboarding/enable-outlets", (req, res) => adminController.enableOutletsBulk(req, res))
+
 export default router
